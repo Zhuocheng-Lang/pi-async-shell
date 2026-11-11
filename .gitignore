@@ -1,0 +1,48 @@
+# Dependencies. Also covers bench/vendors/node_modules, which its own
+# pnpm workspace installs.
+node_modules/
+
+# Build output and caches
+dist/
+coverage/
+*.tsbuildinfo
+.pnpm-store/
+
+# Pi runtime state: async-shell logs and registry, task records, and anything
+# else an extension writes here. The extension also drops a .gitignore holding
+# "*" into .pi/async-shell/, so this rule is the backstop for the rest of the
+# tree. Add an explicit ! negation if a project-level .pi config should ship.
+.pi/
+
+# Benchmark output. Regenerate it with `pnpm bench`; bench/REPORT.md is the
+# committed summary, bench/out/ is scratch.
+bench/out/
+
+# Package archives from `pnpm pack`
+*.tgz
+
+# Logs
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jujutsu. jj writes .jj/.gitignore containing "*" itself, so this only matters
+# for a checkout where that file is missing.
+.jj/

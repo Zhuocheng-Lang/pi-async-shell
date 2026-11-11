@@ -1,0 +1,101 @@
+# Contributing to pi-async-shell
+
+pi-async-shell is a Linux-only Pi extension that supervises shell executions. It is deliberately narrow: seven tools that start, wait on, read, promote, write to, cancel and inspect shell handles. It does not spawn agents, run multi-model workflows, or attach a human terminal. A change that widens that scope needs an issue first.
+
+Issues, pull requests and reviews are welcome in English or Chinese.
+
+## Requirements
+
+- Linux. The runtime reads procfs, and the `pty` binding uses `script(1)`, `mkfifo(1)` and `stty(1)`.
+- Node.js 22.19.0 or later. `.node-version` and `.nvmrc` pin that floor, and CI runs it alongside the current release. The test suite runs `.ts` files directly through Node's built-in type stripping.
+- pnpm 12.21.0, the version pinned by `packageManager` in `package.json`. pnpm installs that version for you when the one on `PATH` is older.
+
+Nothing else. The type checker and the Pi host packages are devDependencies, so no global `tsc` and no Pi installation are needed to run the suite.
+
+## Set up
+
+```sh
+git clone https://github.com/Zhuocheng-Lang/pi-async-shell.git
+cd pi-async-shell
+pnpm install
+pnpm verify
+```
+
+`pnpm install` is the whole setup. It installs `typescript`, `@types/node` and the three Pi host packages at the versions the suite is verified against, all pinned in `devDependencies` and locked in `pnpm-lock.yaml`.
+
+The host packages are also declared in `peerDependencies` with a `*` range, which is the Pi package convention: Pi maps those imports to its own copies at runtime and never installs them from a manifest. The devDependency copies exist so the type checker, the tests and the benchmark import the same modules Pi would. Bumping them is a deliberate act: change `devDependencies`, run `pnpm install`, run `pnpm verify`, and commit the lockfile change with the bump.
+
+`scripts/link-host.mjs` is not part of the setup. It is only needed for the benchmark, where it mirrors Pi's flat module store into `./node_modules` so a third-party extension can be loaded outside Pi. It never replaces a package pnpm manages.
+
+`pnpm-workspace.yaml` holds the pnpm settings. `engineStrict` turns `engines.node` into a hard install requirement, so an older Node fails at install rather than inside the supervisor. `verifyDepsBeforeRun` is off because the benchmark's symlinks would otherwise look like a stale install and get pruned. `allowBuilds` denies the two transitive install scripts in the tree, which is what keeps `pnpm install` non-interactive under pnpm's default `strictDepBuilds`.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `pnpm install` | Installs the dev toolchain from `pnpm-lock.yaml`. |
+| `pnpm verify` | `pnpm typecheck` followed by the full test suite. Run this before every pull request. |
+| `pnpm typecheck` | `tsc --noEmit` over `src/` (including the shipped `.mjs` supervisor), `tests/`, `bench/` and `scripts/`. |
+| `pnpm test` | The full suite, one test file at a time. |
+| `pnpm test:unit` | Only the `tests/*.test.ts` files. |
+| `pnpm link-host` | Mirrors Pi's module store into `./node_modules` for the benchmark. |
+| `pnpm bench` | Regenerates `bench/out/results.json` and `bench/REPORT.md`. |
+| `pnpm pack --dry-run` | Lists the files the published tarball would contain. |
+
+The suite starts real processes and a real Pi SDK session driven by a faux provider. It needs a Linux machine with a writable `/tmp`; it needs no network access.
+
+## What a change needs
+
+- **A test that fails before the change.** The suite asserts on real process behaviour, so a fix without a test is a fix nobody can regress. `tests/helpers.ts` has `tempCwd`, `makeRegistry` and `waitFor`.
+- **A changelog entry** under `[Unreleased]` in `CHANGELOG.md`, using the Keep a Changelog sections: Added, Changed, Removed, Fixed, Security.
+- **Both READMEs** when a user-visible behaviour changes: `README.md` and `README.zh-CN.md`. They are maintained in parallel; a change to one is a change to the other.
+- **Runtime documentation** in `docs/implementation-notes.md` when the mechanics change, and a note in the `docs/design/` series when a decision has a trade-off worth recording.
+- **No new runtime dependencies.** The package ships with none and imports only the host packages Pi supplies. A new dependency needs a strong argument in the pull request.
+- **The tool surface stays at seven.** A new tool needs an issue that explains what the existing seven cannot express.
+
+## Code conventions
+
+- TypeScript ES modules with `module: NodeNext`. Relative imports keep the `.ts` extension: `rewriteRelativeImportExtensions` handles the emit side and Node's type stripping handles the runtime side.
+- `strict` is on and the type checker must pass. `noEmit` is set, so `tsc` is a checker here, not a build step.
+- `checkJs` is on, so the two `.mjs` files under `src/` and `scripts/` are type-checked along with the `.ts` sources. Annotate them with JSDoc rather than loosening the config.
+- No linter or formatter is configured; that is a deliberate choice, not an omission. Match the surrounding style: two spaces, double quotes, semicolons, trailing commas in multiline literals. `.editorconfig` and `.gitattributes` keep indentation and line endings consistent across editors.
+- Comments explain why a decision was made. The runtime has several deliberate oddities — the fd 3 release protocol, `trap - INT QUIT` before `exec`, the wrapper-side `exit.json` — and each one has a reason that outlives the code.
+- Runtime state belongs under `.pi/async-shell/`. Never write it into the repository root.
+
+## Benchmarks
+
+`bench/REPORT.md` is generated. Do not edit it by hand.
+
+```sh
+pnpm link-host
+pnpm install --dir bench/vendors
+pnpm bench
+```
+
+`--quick`, `--only=<impls>` and `--render-only` speed up iteration; `bench/README.md` lists them. Regenerate the report when a change affects a benchmark claim, and include the regenerated report in the same pull request.
+
+## Commits and pull requests
+
+- One concern per pull request. Keep unrelated formatting and renames out of a fix.
+- Write commit subjects in the imperative mood, for example `Fix pipe log cap draining`.
+- Describe what changed, why, and what you ran. Paste the failing output when the change fixes a bug.
+- CI runs `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test` and `pnpm pack --dry-run` on Linux, on Node.js 22.19.0 and on the current release. A pull request that leaves CI red will not be merged.
+
+## Licensing of contributions
+
+Contributions are accepted under MPL-2.0, inbound = outbound. There is no CLA and no copyright assignment: you keep the copyright in what you write, and you license it to everyone under the project license.
+
+New source files under `src/` start with:
+
+```ts
+// SPDX-FileCopyrightText: 2026 <your name>
+// SPDX-License-Identifier: MPL-2.0
+```
+
+Do not paste code that cannot be licensed this way. If a change needs a third-party snippet, say so in the pull request and record its license.
+
+## Reporting
+
+- Bugs and feature requests: open an issue. The templates ask for the version, the platform, the tool calls and the relevant `shell_read` output.
+- Security problems: follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+- Conduct problems: see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

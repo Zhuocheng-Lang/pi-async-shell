@@ -1,0 +1,80 @@
+{
+  "name": "pi-async-shell",
+  "version": "0.2.0-beta.1",
+  "packageManager": "pnpm@12.21.0",
+  "description": "Durable asynchronous shell commands for Pi with bounded waits, searchable logs, PTY input, and workspace recovery.",
+  "type": "module",
+  "license": "MPL-2.0",
+  "author": "Zhuocheng-Lang",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "shell",
+    "async",
+    "pty",
+    "background",
+    "durable"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zhuocheng-Lang/pi-async-shell.git"
+  },
+  "homepage": "https://github.com/Zhuocheng-Lang/pi-async-shell#readme",
+  "bugs": {
+    "url": "https://github.com/Zhuocheng-Lang/pi-async-shell/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
+  "os": [
+    "linux"
+  ],
+  "files": [
+    "src/",
+    "docs/",
+    "skills/",
+    "bench/REPORT.md",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "changelogPath": "./CHANGELOG.md"
+  },
+  "scripts": {
+    "link-host": "node scripts/link-host.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-concurrency=1 \"tests/**/*.test.ts\"",
+    "test:unit": "node --test --test-concurrency=1 \"tests/*.test.ts\"",
+    "bench": "node bench/run-bench.ts",
+    "verify": "pnpm run typecheck && pnpm test",
+    "prepublishOnly": "pnpm verify"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@types/node": "^22.20.5",
+    "typebox": "1.3.27",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared by engines, plus the current release. Everything
+        # between them is covered by the two ends.
+        node: ['22.19.0', '26']
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads the pinned version from packageManager in package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      # Every tool the suite needs is a devDependency, so this is the whole
+      # setup. A lockfile that drifted from package.json fails here.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # Prints the published file list. A files entry that stopped matching the
+      # extension, the skill or the license shows up here.
+      - name: Check the published tarball
+        run: pnpm pack --dry-run
