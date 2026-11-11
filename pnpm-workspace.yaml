@@ -1,0 +1,25 @@
+# pnpm reads its settings from this file instead of .npmrc (pnpm >= 10.13).
+#
+# The published package has no runtime dependencies: Pi supplies the host
+# packages at runtime and they are declared in peerDependencies. The same
+# packages are pinned in devDependencies so that `pnpm install` builds one
+# reproducible tree for the type checker, the tests and the benchmark, instead
+# of resolving whatever the registry serves that day.
+#
+# `scripts/link-host.mjs` adds bench-only symlinks on top of that tree. pnpm's
+# pre-run dependency check cannot see them, treats node_modules as a stale
+# install and prunes them, so the check stays off.
+verifyDepsBeforeRun: false
+
+# Make engines.node a hard requirement. A Node below the declared floor gets a
+# clear install error instead of a runtime failure inside the supervisor.
+engineStrict: true
+
+# Dependency install scripts are denied unless allowed here. Both entries arrive
+# transitively through @earendil-works/pi-coding-agent; neither needs to build
+# anything for the type checker, the tests or the benchmark. Naming them as
+# false keeps `pnpm install` non-interactive and stops strictDepBuilds, which
+# defaults to true, from failing the install with ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  '@google/genai': false
+  protobufjs: false

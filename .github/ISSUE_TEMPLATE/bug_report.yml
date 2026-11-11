@@ -1,0 +1,127 @@
+name: Bug report
+description: >-
+  A shell handle, log, wait, PTY, cancellation or adoption behaves
+  differently from the documentation.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security problems here. Follow
+        [SECURITY.md](https://github.com/Zhuocheng-Lang/pi-async-shell/blob/main/SECURITY.md)
+        instead.
+
+        The documented limits in that file are not bugs: the environment
+        filter is not a sandbox, cancellation is not rollback, and workspace
+        executions outlive Pi on purpose.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >-
+        The observed behaviour, with the exact tool result where you can.
+      placeholder: >-
+        shell_await returned timedOutWaiting: true after the ready file was
+        already created.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: >-
+        Quote the README or doc line that led you to expect it, if there is
+        one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: >-
+        The tool calls, in order. Remove secrets and absolute paths you do not
+        want public.
+      render: TypeScript
+      placeholder: |
+        shell_start({ command: "pnpm run dev", name: "dev" })
+        shell_await({
+          ids: "sh_1234abcd",
+          until: { kind: "ready" },
+          waitMs: 15000
+        })
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: pi-async-shell version
+      description: From package.json, or the tag in your install command.
+      placeholder: 0.2.0-beta.1
+    validations:
+      required: true
+
+  - type: input
+    id: pi-version
+    attributes:
+      label: Pi version
+      placeholder: 1.5.2
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Distribution, kernel and Node.js version
+      description: Output of uname -srm and node --version.
+      placeholder: Linux 6.16.7-arch1-1 x86_64, node v22.19.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: binding
+    attributes:
+      label: I/O binding
+      options:
+        - pipe (default)
+        - pty
+        - not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Ownership scope
+      options:
+        - session (default)
+        - workspace
+        - promoted from session to workspace
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        The relevant shell_read output, or the tail of the files under
+        .pi/async-shell/. Redact what you need to.
+      render: Text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: This is not a security report.
+          required: true
+        - label: I am on Linux, the only platform this package supports.
+          required: true

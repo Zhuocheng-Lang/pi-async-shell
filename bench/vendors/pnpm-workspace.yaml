@@ -1,0 +1,18 @@
+# The vendor field is its own workspace so its lockfile stays independent of
+# the root one. pnpm reads settings from this file (pnpm >= 10.13).
+minimumReleaseAgeExclude:
+  - '@tduyng/pi-shell@0.0.6'
+  - pi-async@0.4.4
+
+# Dependency install scripts are denied unless allowed here. Denying them
+# explicitly keeps `pnpm install` non-interactive and stops strictDepBuilds,
+# which defaults to true, from failing the install with ERR_PNPM_IGNORED_BUILDS.
+#
+# @homebridge/node-pty-prebuilt-multiarch is denied on purpose, not by
+# oversight: bench/REPORT.md was produced without its native binding, and
+# enabling the build would change what the shell-jobs row measures. Flip it to
+# true and regenerate the report together, never one without the other.
+allowBuilds:
+  '@google/genai': false
+  '@homebridge/node-pty-prebuilt-multiarch': false
+  protobufjs: false

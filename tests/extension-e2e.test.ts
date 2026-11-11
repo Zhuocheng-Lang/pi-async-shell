@@ -1,0 +1,423 @@
+/**
+ * End-to-end verification through a real Pi session.
+ *
+ * A faux provider scripts the model's tool calls, so these tests exercise the
+ * actual extension loader, tool schema validation, tool execution, the
+ * completion-message path, and the /reload handoff without a network or a real
+ * model.
+ */
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "node:test";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRuntime,
+  SessionManager,
+  wrapRegisteredTool,
+} from "@earendil-works/pi-coding-agent";
+import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import type { TranscriptContext } from "@earendil-works/pi-ai";
+
+const extensionPath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "extension.ts");
+
+interface Harness {
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+  faux: ReturnType<typeof createFauxCore>;
+  callTool(name: string, params: Record<string, unknown>): Promise<string>;
+  toolSchema(name: string): Record<string, any>;
+  refresh(): void;
+  dispose(): void;
+}
+
+async function createHarness(): Promise<Harness> {
+  const cwd = mkdtempSync(join(tmpdir(), "pas-e2e-"));
+  const agentDir = mkdtempSync(join(tmpdir(), "pas-agent-"));
+  writeFileSync(join(agentDir, "auth.json"), "{}");
+  const faux = createFauxCore({ models: [{ id: "faux-1", contextWindow: 128000, maxTokens: 4096 }] });
+  const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json") });
+  modelRuntime.registerProvider("faux", {
+    apiKey: "faux-test-key",
+    baseUrl: "http://localhost:0",
+    api: faux.api,
+    models: [
+      {
+        type: "chat",
+        id: "faux-1",
+        name: "Faux Model",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128000,
+        maxTokens: 4096,
+      },
+    ],
+    streamSimple: faux.streamSimple,
+  });
+  await modelRuntime.setRuntimeApiKey("faux", "faux-test-key");
+
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    additionalExtensionPaths: [extensionPath],
+  });
+  await resourceLoader.reload();
+  const { session } = await createAgentSession({
+    cwd,
+    agentDir,
+    modelRuntime,
+    resourceLoader,
+    sessionManager: SessionManager.inMemory(),
+    model: faux.getModel(),
+    thinkingLevel: "off",
+  });
+  // A shutdown handler makes the runner "bound", which is what makes
+  // session_start(reason: "reload") fire after session.reload().
+  await session.bindExtensions({ shutdownHandler: () => {} });
+
+  let tools = new Map<string, { execute: (...args: unknown[]) => Promise<any> }>();
+  let definitions = new Map<string, Record<string, any>>();
+  const refresh = () => {
+    const runner = (session as unknown as { _extensionRunner: any })._extensionRunner;
+    const registered = runner.getAllRegisteredTools() as { definition: Record<string, any> }[];
+    definitions = new Map(registered.map((tool) => [tool.definition.name, tool.definition]));
+    tools = new Map(
+      registered.map((tool) => [
+        tool.definition.name,
+        wrapRegisteredTool(tool as never, runner) as never,
+      ]),
+    );
+  };
+  refresh();
+
+  return {
+    session,
+    faux,
+    async callTool(name, params) {
+      const tool = tools.get(name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      const result = await tool.execute(`e2e-${name}`, params, undefined, undefined);
+      return (result?.content ?? [])
+        .map((block: { type?: string; text?: string }) => (block.type === "text" ? block.text ?? "" : ""))
+        .join("\n");
+    },
+    toolSchema(name) {
+      const definition = definitions.get(name);
+      if (!definition) throw new Error(`tool not registered: ${name}`);
+      return definition.parameters as Record<string, any>;
+    },
+    refresh,
+    dispose() {
+      session.dispose();
+    },
+  };
+}
+
+function lastToolText(context: TranscriptContext): string {
+  const messages = context.messages as unknown as { role?: string; content?: unknown }[];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "toolResult") continue;
+    const content = message.content;
+    if (Array.isArray(content)) {
+      return content
+        .map((block: { type?: string; text?: string }) => (block.type === "text" ? block.text ?? "" : ""))
+        .join("\n");
+    }
+    return String(content ?? "");
+  }
+  return "";
+}
+
+function lastHandleId(context: TranscriptContext): string {
+  const match = lastToolText(context).match(/sh_[0-9a-f]{8}/);
+  if (!match) throw new Error("no handle id in the transcript");
+  return match[0];
+}
+
+function customMessages(session: Harness["session"], type: string): { content?: unknown }[] {
+  return (session.messages as unknown as { customType?: string; content?: unknown }[]).filter(
+    (message) => message.customType === type,
+  );
+}
+
+function completionInContext(context: TranscriptContext): boolean {
+  return JSON.stringify(context.messages).includes("<async-shell-completion>");
+}
+
+/** The handle id whose start result mentions this command. */
+function handleIdForCommand(context: TranscriptContext, command: string): string {
+  const messages = context.messages as unknown as { role?: string; content?: unknown }[];
+  for (const message of messages) {
+    if (message.role !== "toolResult") continue;
+    const text = Array.isArray(message.content)
+      ? message.content
+          .map((block: { type?: string; text?: string }) => (block.type === "text" ? block.text ?? "" : ""))
+          .join("\n")
+      : String(message.content ?? "");
+    if (!text.includes(command)) continue;
+    const match = text.match(/sh_[0-9a-f]{8}/);
+    if (match) return match[0];
+  }
+  throw new Error(`no handle id for command: ${command}`);
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+
+test("a real Pi session drives the seven shell tools end to end", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const shellTools = harness.session
+      .getActiveToolNames()
+      .filter((name) => name.startsWith("shell_"))
+      .sort();
+    assert.deepEqual(shellTools, [
+      "shell_await",
+      "shell_cancel",
+      "shell_promote",
+      "shell_read",
+      "shell_send",
+      "shell_start",
+      "shell_status",
+    ]);
+    const startSchema = harness.toolSchema("shell_start");
+    assert.deepEqual(startSchema.properties.scope.enum, ["session", "workspace"]);
+    assert.deepEqual(startSchema.properties.delivery.enum, ["steer", "settle"]);
+    assert.equal(startSchema.properties.readiness, undefined);
+    const awaitSchema = harness.toolSchema("shell_await");
+    assert.equal(awaitSchema.properties.waitMs.maximum, 50_000);
+    assert.equal(awaitSchema.properties.cancelOnFirstFailure, undefined);
+    assert.match(harness.session.systemPrompt, /shell_start runs commands with `\/bin\/sh -c <command>`/);
+
+    // Turn 1: start, await, read — the causal barrier pi-background-tasks lacks.
+    harness.faux.setResponses([
+      fauxAssistantMessage(
+        [fauxToolCall("shell_start", { command: "echo e2e-hello; sleep 0.3; echo e2e-done", scope: "session" })],
+        { stopReason: "toolUse" },
+      ),
+      (context) =>
+        fauxAssistantMessage(
+          [fauxToolCall("shell_await", { ids: lastHandleId(context), waitMs: 10_000 })],
+          { stopReason: "toolUse" },
+        ),
+      (context) =>
+        fauxAssistantMessage(
+          [fauxToolCall("shell_read", { id: lastHandleId(context), stream: "stdout", mode: "tail" })],
+          { stopReason: "toolUse" },
+        ),
+      fauxAssistantMessage("turn one done"),
+    ]);
+    await harness.session.prompt("start and await the command");
+
+    const texts = harness.session.messages
+      .filter((message) => message.role === "toolResult")
+      .map((message) =>
+        (message.content as { type: string; text?: string }[])
+          .map((block) => block.text ?? "")
+          .join("\n"),
+      );
+    assert.match(texts[0] ?? "", /Started sh_[0-9a-f]{8}/);
+    assert.match(texts[1] ?? "", /completed/);
+    assert.match(texts[2] ?? "", /e2e-hello/);
+
+    // Turn 2: a completion event wakes the session after the turn ends.
+    harness.faux.appendResponses([
+      fauxAssistantMessage(
+        [fauxToolCall("shell_start", { command: "echo notify-me", scope: "session", notifyOnCompletion: true })],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("ending the turn"),
+      fauxAssistantMessage("noted the completion"),
+    ]);
+    await harness.session.prompt("start a quick command and end the turn");
+    assert.equal(
+      await waitFor(() => customMessages(harness.session, "async-shell-completion").length > 0),
+      true,
+      "a completion message must reach the session",
+    );
+    assert.match(
+      JSON.stringify(customMessages(harness.session, "async-shell-completion")[0]?.content),
+      /notify-me|completed/,
+    );
+
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("a default session execution survives agent settling", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const started = await harness.callTool("shell_start", { command: "sleep 30" });
+    const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id);
+    harness.faux.setResponses([fauxAssistantMessage("end the turn without awaiting")]);
+    await harness.session.prompt("leave the session command running");
+
+    const status = await harness.callTool("shell_status", { id });
+    assert.match(status, /running/);
+    assert.match(status, /scope session/);
+    assert.equal(customMessages(harness.session, "async-shell-error").length, 0);
+    await harness.callTool("shell_cancel", { ids: id, ladder: "force" });
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("three completions coalesce into one message", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    harness.faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo one", scope: "session" }),
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo two", scope: "session" }),
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo three", scope: "session" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("ending the turn"),
+      fauxAssistantMessage("acknowledged"),
+    ]);
+    await harness.session.prompt("start three quick commands and end the turn");
+    assert.equal(
+      await waitFor(() => customMessages(harness.session, "async-shell-completion").length > 0),
+      true,
+    );
+    const messages = customMessages(harness.session, "async-shell-completion");
+    assert.equal(messages.length, 1, "coalescing must produce one delivery, not three");
+    const content = JSON.stringify(messages[0]?.content);
+    const ids = new Set(content.match(/sh_[0-9a-f]{8}/g) ?? []);
+    assert.equal(ids.size, 3, "every record is still delivered");
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("a completion steers into the next LLM call of a running turn", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  const seen: boolean[] = [];
+  try {
+    harness.faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo steered", scope: "session" }),
+          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      (context) =>
+        fauxAssistantMessage(
+          [fauxToolCall("shell_await", { ids: handleIdForCommand(context, "sleep 2"), waitMs: 10_000 })],
+          { stopReason: "toolUse" },
+        ),
+      // The short command settled while the await held the turn open, so this
+      // decision is the first one that could know about it.
+      (context) => {
+        seen.push(completionInContext(context));
+        return fauxAssistantMessage("done");
+      },
+    ]);
+    await harness.session.prompt("start two commands and wait for the long one");
+
+    assert.equal(seen.length, 1, "steering must not force an extra request");
+    assert.equal(seen[0], true, "a completion must reach the model before its next decision");
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("delivery settle holds a completion until the run has no more work", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  const seen: boolean[] = [];
+  try {
+    harness.faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("shell_start", {
+            command: "sleep 0.2; echo held",
+            scope: "session",
+            delivery: "settle",
+          }),
+          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      (context) =>
+        fauxAssistantMessage(
+          [fauxToolCall("shell_await", { ids: handleIdForCommand(context, "sleep 2"), waitMs: 10_000 })],
+          { stopReason: "toolUse" },
+        ),
+      (context) => {
+        seen.push(completionInContext(context));
+        return fauxAssistantMessage("done");
+      },
+      (context) => {
+        seen.push(completionInContext(context));
+        return fauxAssistantMessage("noted");
+      },
+    ]);
+    await harness.session.prompt("start a held command and wait for the long one");
+
+    assert.equal(seen.length, 2, "settle must keep the run alive for the record");
+    assert.equal(seen[0], false, "settle must not steer mid-run");
+    assert.equal(seen[1], true, "the record must still reach the model");
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("/reload hands live handles to the new activation", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const started = await harness.callTool("shell_start", { command: "sleep 30", scope: "session" });
+    const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id, "handle id");
+
+    await harness.session.reload();
+    harness.refresh();
+
+    const status = await harness.callTool("shell_status", { id });
+    assert.match(status, /running/, "the handle must survive the reload");
+    const read = await harness.callTool("shell_read", { id, stream: "combined" });
+    assert.match(read, /sh_[0-9a-f]{8}/, "logs stay readable after the reload");
+    const cancelled = await harness.callTool("shell_cancel", { ids: id, ladder: "force" });
+    assert.match(cancelled, /cancelled/);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});

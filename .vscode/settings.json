@@ -1,0 +1,14 @@
+{
+  // Use the TypeScript in node_modules rather than the one the editor ships,
+  // so the editor and `pnpm typecheck` agree on diagnostics.
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // .editorconfig covers these for editors that read it; VS Code needs them here.
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false
+  }
+}

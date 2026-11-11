@@ -1,0 +1,9 @@
+# Normalize checkout line endings. The runtime writes shell scripts and
+# generated reports, and a CRLF checkout would break both.
+* text=auto eol=lf
+
+# Machine-generated. Collapse it in review and keep it out of the language
+# statistics; regenerate it with the command in bench/README.md instead of
+# editing it.
+pnpm-lock.yaml -diff linguist-generated
+bench/vendors/pnpm-lock.yaml -diff linguist-generated

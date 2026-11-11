@@ -1,0 +1,16 @@
+{
+  "name": "pi-async-shell-bench-vendors",
+  "private": true,
+  "description": "The competitor field for bench/, pinned. Install with: pnpm install --dir bench/vendors",
+  "type": "commonjs",
+  "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "0.15.0",
+    "@tduyng/pi-shell": "0.0.6",
+    "pi-async": "0.4.4",
+    "pi-background": "0.4.4",
+    "pi-better-background-tasks": "0.18.0",
+    "pi-exec-command": "0.3.10",
+    "pi-patty-bg-tasks": "1.1.6",
+    "pi-shell-jobs": "0.1.2"
+  }
+}

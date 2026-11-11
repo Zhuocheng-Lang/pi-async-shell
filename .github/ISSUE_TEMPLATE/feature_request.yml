@@ -1,0 +1,65 @@
+name: Feature request
+description: >-
+  Propose a capability that the seven shell tools cannot express today.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This package is deliberately narrow: shell execution handles only. It
+        does not spawn agents, run multi-model workflows, or attach a human
+        terminal. A proposal that widens that scope needs to say why the
+        existing tools cannot cover the case.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        The workflow that does not work today, described as a sequence of
+        steps rather than as a missing API.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What the tool call would look like, and what it returns.
+      render: TypeScript
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >-
+        Existing tools, flags, or another Pi package. Say why each one falls
+        short.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Does this add a tool?
+      options:
+        - No, it changes an existing tool
+        - Yes, it adds an eighth tool
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: >-
+            I read "The seven tools" and "Environment, storage, and limits" in
+            the README.
+          required: true
