@@ -13,7 +13,7 @@ Agent 按顺序回答三个问题。第一个决定作用域，第二个决定�
 - 每个作用域与每个绑定都能组合，两种绑定都能从 `session` 提升到 `workspace`，无需重启，也没有日志切换（R2、R4）。
 - 轮次边界永远不会取消 `session` 执行。没有更窄的作用域，也没有落时错误。需要在一轮之内建立因果屏障的调用者调用 `shell_await`，而不是取得一个不同的所有者。
 
-预计一两秒内完成的命令应使用内置 `bash`。`shell_start` 会增加一个句柄、一个日志目录与一次工具往返。这些在 `git status` 上都不划算。
+当输出不需要活过本次调用时，预计一两秒内完成的命令应使用内置 `bash`。`shell_start` 会增加一个句柄、一个日志目录与一次工具往返。行内落定窗口（§3.1）消掉了第二次往返，句柄与日志目录仍然存在。这些在 `git status` 上都不划算。
 
 ---
 
@@ -38,7 +38,7 @@ starting -> running -> { completed | failed | cancelled | timed-out | lost }
 
 ### 3.1 `shell_start`
 
-它接纳一次执行并返回句柄。除了成功接纳，它什么都不等：进程已启动，元数据已写入。
+它接纳一次执行并返回句柄。除了成功接纳，它什么都不等：进程已启动，元数据已写入。它唯一可能增加的等待是有界且可关闭的：`inlineSettleMs`。
 
 ```ts
 interface ShellStartParams {
@@ -62,6 +62,8 @@ interface ShellStartParams {
   delivery?: "steer" | "settle";
   /** 调用者提供的重放键。同一 request 的两次启动只产生一次执行。 */
   request?: string;
+  /** 为立即落定而挂住本次调用。默认 1000；0 表示立刻返回句柄。 */
+  inlineSettleMs?: number;
 }
 
 interface ShellHandle {
@@ -91,6 +93,10 @@ interface ShellHandle {
 ```
 
 没有 `readiness` 参数。能证明自身健康的命令创建 `$PI_ASYNC_SHELL_EXEC_DIR/ready`；不能的命令通过 `shell_await` 上的输出模式观察。
+
+**行内落定窗口。** 在接纳它所需的时间里就结束的命令，不应该再花一次工具调用。因此 `shell_start` 会为自己的结果最多挂住 `inlineSettleMs`（默认 1000ms），等待该执行落定。若它落定，这次调用返回终态句柄与其输出尾部，且不再重复通告该次落定：工具结果本身就是投递。若没有落定，句柄与之前完全一样地返回，认领也随之释放，因此稍后才落定的命令仍会通过完成通道（§4）到达 Agent。`structuredContent.settledInline` 说明程序收到的是哪一种。
+
+该窗口是便利，不是持久性保证。到期不等于取消任何东西，也没有任何执行因为某次启动调用不再等待而改变状态。实测从接纳到落定的延迟约为 `pipe` 50ms、`pty` 260ms，默认值覆盖了它该覆盖的范围。
 
 ### 3.1a 结果通道
 
@@ -240,6 +246,7 @@ interface ShellSendParams {
 | 事实 | 效果 |
 |---|---|
 | 对该句柄的 `shell_await` 返回了它的终态 | `consumedByAwait = true`；不投递后续事件 |
+| 落定发生在某次 `shell_start` 的行内窗口内 | 启动结果携带它；不投递后续事件 |
 | `notifyOnCompletion` 为真且没有 await 消费它 | 入队一条完成记录 |
 | Agent 正忙，`delivery: "steer"`（默认） | 记录被合并，在下一次 LLM 调用之前 steer 投递 |
 | Agent 正忙，`delivery: "settle"` | 记录被合并，在 `agent_before_settle` 时一次投递 |

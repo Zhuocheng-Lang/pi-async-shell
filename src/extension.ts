@@ -28,6 +28,12 @@ import type {
 const COMPLETION_TYPE = "async-shell-completion";
 const STATUS_KEY = "async-shell";
 const HANDOFF_TTL_MS = 30_000;
+/**
+ * How long `shell_start` holds its own call open for an immediate settle. A
+ * command that outlives the window keeps the handle it always returned.
+ */
+const DEFAULT_INLINE_SETTLE_MS = 1_000;
+const MAX_INLINE_SETTLE_MS = 10_000;
 
 interface ExtensionState {
   pi: ExtensionAPI;
@@ -39,6 +45,8 @@ interface ExtensionState {
   uiTimer?: NodeJS.Timeout;
   flushTimer?: NodeJS.Timeout;
   delivered: Set<string>;
+  /** Executions whose settle an open tool call is returning itself. */
+  settleClaims: Set<string>;
   shellPolicyText: string;
 }
 
@@ -47,6 +55,7 @@ const state: ExtensionState = {
   busy: false,
   pending: [],
   delivered: new Set(),
+  settleClaims: new Set(),
   shellPolicyText: "",
 };
 
@@ -154,6 +163,12 @@ const statusResultSchema = Type.Object({
   workspaceOwner: Type.Boolean(),
 });
 
+/** `shell_start` returns a handle, and reports a settle inline when it has one. */
+const startResultSchema = Type.Object({
+  ...handleSchema.properties,
+  settledInline: Type.Optional(Type.Boolean()),
+});
+
 // ------------------------------------------------------------------- utilities
 
 /** Structured content must not carry explicit undefined values. */
@@ -210,6 +225,59 @@ function sendHeadline(result: ShellSendResult): string {
   return `Nothing written to ${result.id} (no reader on its stdin, or this request was already sent)`;
 }
 
+/**
+ * Hold a `shell_start` call open long enough for a command to finish inside it.
+ *
+ * A settle reaches `onSettle` before any waiter can observe it, so the id is
+ * claimed for as long as the call waits. The claim is released when the wait
+ * ends without a settle, and a command that outlives the window announces its
+ * own completion exactly as before.
+ */
+async function holdForSettle(
+  registry: ShellRegistry,
+  handle: ShellHandle,
+  inlineSettleMs: number,
+  signal?: AbortSignal,
+): Promise<ShellHandle | undefined> {
+  if (inlineSettleMs <= 0) return undefined;
+  state.settleClaims.add(handle.id);
+  try {
+    const outcome = await registry.awaitHandles(
+      { ids: handle.id, waitMs: inlineSettleMs, includeOutputPreview: false },
+      signal,
+    );
+    const settled = outcome.outcomes.find((candidate) => candidate.id === handle.id);
+    if (!settled) return undefined;
+    // This call is the delivery. A settle that raced the admission is already
+    // queued, so it is dropped here instead of arriving a second time.
+    state.delivered.add(settled.id);
+    state.pending = state.pending.filter((record) => record.id !== settled.id);
+    return settled;
+  } finally {
+    state.settleClaims.delete(handle.id);
+  }
+}
+
+/** A start result is a handle; a settled one also carries its output. */
+function startText(
+  handle: ShellHandle,
+  inlineSettleMs: number | undefined,
+  preview: string | undefined,
+): string {
+  const lines = [`Started ${describeHandle(handle)}`];
+  if (inlineSettleMs !== undefined) {
+    lines.push(
+      `Settled inside the ${formatDuration(inlineSettleMs)} inline window, so the result is here and no shell_await is needed.`,
+    );
+    if (preview?.trim()) {
+      lines.push("  --- tail ---");
+      for (const line of preview.split("\n")) lines.push(`  ${line}`);
+    }
+  }
+  lines.push(`log: ${handle.log.combined}`);
+  return lines.join("\n");
+}
+
 function requireRegistry(): ShellRegistry {
   assertLinux();
   if (!state.registry) {
@@ -224,6 +292,19 @@ function enqueueCompletion(record: CompletionRecord): void {
   if (state.delivered.has(record.id)) return;
   state.pending.push(record);
   scheduleFlush();
+}
+
+/**
+ * The one place a settle becomes a message. A record is skipped when the caller
+ * opted out, when an await already reported it, or when a tool call that is
+ * still open is about to return it inline.
+ */
+function handleSettle(handle: ShellHandle, record: CompletionRecord): void {
+  const reportedInline = state.settleClaims.has(handle.id);
+  if (!reportedInline && !handle.consumedByAwait && handle.notifyOnCompletion !== false) {
+    enqueueCompletion(record);
+  }
+  updateUi();
 }
 
 /**
@@ -343,12 +424,7 @@ function createRegistry(ctx: ExtensionContext): ShellRegistry {
     cwd,
     sessionId,
     env: process.env,
-    onSettle: (handle, record) => {
-      if (!handle.consumedByAwait && handle.notifyOnCompletion !== false) {
-        enqueueCompletion(record);
-      }
-      updateUi();
-    },
+    onSettle: handleSettle,
     onReady: () => updateUi(),
     onChange: () => updateUi(),
     onDiagnostic: (message) => {
@@ -393,8 +469,8 @@ const promptSnippet =
   "Start, await, read, promote, send to, cancel, or inspect asynchronous shell executions";
 
 const basePromptGuidelines = [
-  "Use shell_start for commands that are slow, that should run in parallel, that must outlive the turn, or whose full log matters; keep bash for commands that finish in a second or two.",
-  "shell_start returns a handle immediately. Do independent work first, then call shell_await; do not sleep or poll shell_status in a loop.",
+  "Use shell_start for commands that are slow, that should run in parallel, that must outlive the turn, or whose full log matters; keep bash for commands that finish in a second or two and need no log.",
+  "shell_start returns a handle immediately, except that a command settling within inlineSettleMs (default 1000) returns its status and output tail in that same call; then there is nothing to await. Do independent work first, then call shell_await; do not sleep or poll shell_status in a loop.",
   "shell_await uses waitMs up to 50000 (default 30000). In codemode leave room in the 60-second script budget; end the turn for longer waits.",
   "shell_read returns a bounded slice. Use mode grep or offset to find what matters instead of reading a whole log.",
   "shell_send requires binding pty; a pipe execution has no terminal and refuses stdin.",
@@ -414,6 +490,9 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     assertLinux();
+    // No tool call survives an activation, so no claim can either. A record
+    // that settles after this point must be able to announce itself.
+    state.settleClaims.clear();
     state.ctx = ctx;
     const cwd = realpathSync(ctx.cwd);
     const sessionId = ctx.sessionManager.getSessionId();
@@ -425,12 +504,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       if (claimed) {
         state.registry = claimed;
         claimed.rebind({
-          onSettle: (handle, record) => {
-            if (!handle.consumedByAwait && handle.notifyOnCompletion !== false) {
-              enqueueCompletion(record);
-            }
-            updateUi();
-          },
+          onSettle: handleSettle,
           onReady: () => updateUi(),
           onChange: () => updateUi(),
         });
@@ -471,6 +545,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     releaseWorkspaceLock(registry.paths);
     state.registry = undefined;
     state.pending = [];
+    state.settleClaims.clear();
     state.ctx?.ui.setStatus(STATUS_KEY, undefined);
   });
 
@@ -510,7 +585,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "shell_start",
     label: "Start async shell",
-    description: `Start a session or workspace command with pipe or pty I/O. Returns immediately. ${shellPolicy.shell} -c runs the command; explicit env values override the default credential filter.`,
+    description: `Start a session or workspace command with pipe or pty I/O. Returns a handle, unless the command settles within inlineSettleMs, in which case this call returns its outcome and output tail. ${shellPolicy.shell} -c runs the command; explicit env values override the default credential filter.`,
     promptSnippet,
     promptGuidelines,
     parameters: Type.Object({
@@ -525,15 +600,42 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       triggerOnCompletion: Type.Optional(Type.Boolean()),
       delivery: Type.Optional(deliveryEnum),
       request: Type.Optional(Type.String()),
+      inlineSettleMs: Type.Optional(
+        Type.Number({
+          minimum: 0,
+          maximum: MAX_INLINE_SETTLE_MS,
+          description: `Hold this call open this long for a settle. Default ${DEFAULT_INLINE_SETTLE_MS}; 0 returns the handle at once.`,
+        }),
+      ),
     }),
-    outputSchema: handleSchema,
-    async execute(_toolCallId, params) {
+    outputSchema: startResultSchema,
+    async execute(_toolCallId, params, signal) {
       const registry = requireRegistry();
+      const inlineSettleMs = Math.max(
+        0,
+        Math.min(MAX_INLINE_SETTLE_MS, params.inlineSettleMs ?? DEFAULT_INLINE_SETTLE_MS),
+      );
       const handle = await registry.start(params as never);
+      const settled = await holdForSettle(registry, handle, inlineSettleMs, signal);
+      const reported = settled ?? handle;
+      let preview: string | undefined;
+      if (settled) {
+        try {
+          const tail = await registry.read({ id: settled.id, mode: "tail", lines: 20 });
+          preview = tail.text;
+        } catch {
+          /* the preview is a convenience, not the contract */
+        }
+      }
       return {
-        content: [{ type: "text" as const, text: `Started ${describeHandle(handle)}\nlog: ${handle.log.combined}` }],
-        structuredContent: json(handle),
-        details: { id: handle.id },
+        content: [
+          {
+            type: "text" as const,
+            text: startText(reported, settled ? inlineSettleMs : undefined, preview),
+          },
+        ],
+        structuredContent: json(settled ? { ...settled, settledInline: true } : handle),
+        details: { id: reported.id, settled: Boolean(settled) },
       };
     },
   });

@@ -28,6 +28,7 @@ interface Harness {
   session: Awaited<ReturnType<typeof createAgentSession>>["session"];
   faux: ReturnType<typeof createFauxCore>;
   callTool(name: string, params: Record<string, unknown>): Promise<string>;
+  callToolResult(name: string, params: Record<string, unknown>): Promise<any>;
   toolSchema(name: string): Record<string, any>;
   refresh(): void;
   dispose(): void;
@@ -93,17 +94,22 @@ async function createHarness(): Promise<Harness> {
   };
   refresh();
 
+  const callToolResult = async (name: string, params: Record<string, unknown>) => {
+    const tool = tools.get(name);
+    if (!tool) throw new Error(`tool not registered: ${name}`);
+    return tool.execute(`e2e-${name}`, params, undefined, undefined);
+  };
+
   return {
     session,
     faux,
     async callTool(name, params) {
-      const tool = tools.get(name);
-      if (!tool) throw new Error(`tool not registered: ${name}`);
-      const result = await tool.execute(`e2e-${name}`, params, undefined, undefined);
+      const result = await callToolResult(name, params);
       return (result?.content ?? [])
         .map((block: { type?: string; text?: string }) => (block.type === "text" ? block.text ?? "" : ""))
         .join("\n");
     },
+    callToolResult,
     toolSchema(name) {
       const definition = definitions.get(name);
       if (!definition) throw new Error(`tool not registered: ${name}`);
@@ -229,13 +235,21 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
           .join("\n"),
       );
     assert.match(texts[0] ?? "", /Started sh_[0-9a-f]{8}/);
+    assert.match(texts[0] ?? "", /Settled inside the 1\.0s inline window/);
     assert.match(texts[1] ?? "", /completed/);
     assert.match(texts[2] ?? "", /e2e-hello/);
 
     // Turn 2: a completion event wakes the session after the turn ends.
     harness.faux.appendResponses([
       fauxAssistantMessage(
-        [fauxToolCall("shell_start", { command: "echo notify-me", scope: "session", notifyOnCompletion: true })],
+        [
+          fauxToolCall("shell_start", {
+            command: "echo notify-me",
+            scope: "session",
+            notifyOnCompletion: true,
+            inlineSettleMs: 0,
+          }),
+        ],
         { stopReason: "toolUse" },
       ),
       fauxAssistantMessage("ending the turn"),
@@ -252,6 +266,90 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
       /notify-me|completed/,
     );
 
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("a command that settles inside the start call returns its result there", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const result = await harness.callToolResult("shell_start", {
+      command: "echo inline-hello; exit 3",
+      scope: "session",
+    });
+    const text = (result.content as { type: string; text?: string }[])
+      .map((block) => block.text ?? "")
+      .join("\n");
+    assert.match(text, /Started sh_[0-9a-f]{8}/);
+    assert.match(text, /failed/);
+    assert.match(text, /inline-hello/);
+    assert.equal(result.structuredContent.settledInline, true);
+    assert.equal(result.structuredContent.status, "failed");
+    assert.equal(result.structuredContent.exitCode, 3);
+    // The settle was reported by this call, so it must not be reported twice.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(customMessages(harness.session, "async-shell-completion").length, 0);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("a command that outlives the inline window keeps the handle and still notifies", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const startedAt = Date.now();
+    const started = await harness.callTool("shell_start", {
+      command: "sleep 3; echo late",
+      scope: "session",
+      triggerOnCompletion: false,
+    });
+    const elapsed = Date.now() - startedAt;
+    assert.match(started, /Started sh_[0-9a-f]{8}/);
+    assert.match(started, /running/);
+    assert.doesNotMatch(started, /Settled inside/);
+    assert.ok(elapsed < 2000, `the start call must return when the window expires, not when the command settles (${elapsed}ms)`);
+    // The claim ended with the wait, so the settle is still announced.
+    assert.equal(
+      await waitFor(() => customMessages(harness.session, "async-shell-completion").length > 0),
+      true,
+      "a settle after the window must still reach the session",
+    );
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("inlineSettleMs: 0 returns at once and leaves the completion channel alone", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    assert.equal(harness.toolSchema("shell_start").properties.inlineSettleMs.maximum, 10_000);
+    const startedAt = Date.now();
+    const started = await harness.callTool("shell_start", {
+      command: "echo no-inline",
+      scope: "session",
+      inlineSettleMs: 0,
+      triggerOnCompletion: false,
+    });
+    assert.ok(Date.now() - startedAt < 800, "an explicit zero must not wait");
+    assert.doesNotMatch(started, /Settled inside/);
+    assert.equal(
+      await waitFor(() => customMessages(harness.session, "async-shell-completion").length > 0),
+      true,
+      "an unclaimed settle must be announced",
+    );
   } finally {
     harness.dispose();
     if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
@@ -290,9 +388,9 @@ test("three completions coalesce into one message", { timeout: 120_000 }, async 
     harness.faux.setResponses([
       fauxAssistantMessage(
         [
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo one", scope: "session" }),
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo two", scope: "session" }),
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo three", scope: "session" }),
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo one", scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo two", scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo three", scope: "session", inlineSettleMs: 0 }),
         ],
         { stopReason: "toolUse" },
       ),
@@ -325,8 +423,8 @@ test("a completion steers into the next LLM call of a running turn", { timeout: 
     harness.faux.setResponses([
       fauxAssistantMessage(
         [
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo steered", scope: "session" }),
-          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session" }),
+          fauxToolCall("shell_start", { command: "sleep 0.2; echo steered", scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session", inlineSettleMs: 0 }),
         ],
         { stopReason: "toolUse" },
       ),
@@ -366,8 +464,9 @@ test("delivery settle holds a completion until the run has no more work", { time
             command: "sleep 0.2; echo held",
             scope: "session",
             delivery: "settle",
+            inlineSettleMs: 0,
           }),
-          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session" }),
+          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session", inlineSettleMs: 0 }),
         ],
         { stopReason: "toolUse" },
       ),

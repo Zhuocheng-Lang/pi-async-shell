@@ -264,11 +264,19 @@
 
 ### consumedByAwait（已被 await 消费）
 
-**定义。** 标记：某个 `shell_await` 已经返回该句柄的终态，因此不需要后续事件。
+**定义。** 标记：某个 `shell_await`——包括 `shell_start` 的行内窗口——已经返回该句柄的终态，因此不需要后续事件。
 
 **不是** 抑制记录。记录仍然持久。被抑制的只是唤醒，之后的 `shell_read` 仍能找到输出。
 
 **用于** `03-execution-model-and-primitives.md` §4；`04-runtime-architecture.md` §7。
+
+### inlineSettleMs（行内落定窗口）
+
+**定义。** `shell_start` 为自己的结果最多挂住多久来等待落定。默认 1000ms；`0` 表示立刻返回句柄。
+
+**不是** 等待条件。它只观察退出；就绪与输出模式仍然是 `shell_await` 的条件，到期也不取消任何东西。
+
+**用于** `03-execution-model-and-primitives.md` §3.1。
 
 ### process identity（进程身份）
 

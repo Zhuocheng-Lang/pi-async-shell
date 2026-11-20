@@ -13,7 +13,7 @@ Two guards follow from the model, not from policy:
 - Every scope combines with every binding, and both bindings promote from `session` to `workspace` without a respawn or a log transition (R2, R4).
 - A turn boundary never cancels a `session` execution. There is no narrower scope and no settle-time error. A caller that needs a causal barrier inside one turn calls `shell_await`; it does not acquire a different owner.
 
-Commands expected to finish in a second or two belong on built-in `bash`. `shell_start` adds a handle, a log directory and a tool round-trip. None of that pays for itself on `git status`.
+Commands expected to finish in a second or two belong on built-in `bash` when the output does not need to outlive the call. `shell_start` adds a handle, a log directory and a tool round-trip. The inline settle window (§3.1) removes the second round trip, and the handle and the log directory remain. Neither pays for itself on `git status`.
 
 ---
 
@@ -38,7 +38,7 @@ starting -> running -> { completed | failed | cancelled | timed-out | lost }
 
 ### 3.1 `shell_start`
 
-It admits an execution and returns its handle. It waits for nothing except successful admission: the process is spawned and the metadata is written.
+It admits an execution and returns its handle. It waits for nothing except successful admission: the process is spawned and the metadata is written. The one wait it can add is bounded and opt-out: `inlineSettleMs`.
 
 ```ts
 interface ShellStartParams {
@@ -62,6 +62,8 @@ interface ShellStartParams {
   delivery?: "steer" | "settle";
   /** Caller-supplied replay key. Two starts with one request produce one execution. */
   request?: string;
+  /** Hold this call open for an immediate settle. Default 1000; 0 returns the handle at once. */
+  inlineSettleMs?: number;
 }
 
 interface ShellHandle {
@@ -91,6 +93,10 @@ interface ShellHandle {
 ```
 
 There is no `readiness` parameter. A command that can prove its own health creates `$PI_ASYNC_SHELL_EXEC_DIR/ready`; a command that cannot is observed through an output pattern on `shell_await`.
+
+**The inline settle window.** A command that finishes in about the time it takes to admit it should not cost a second tool call. `shell_start` therefore holds its own result for at most `inlineSettleMs` (default 1000ms) waiting for the execution to settle. When it settles, the call returns the terminal handle and a tail of its output, and the settle is not announced again: the tool result is the delivery. When it does not, the handle is returned exactly as before and the claim is released, so a command that settles later still reaches the agent through the completion channel (§4). `structuredContent.settledInline` says which of the two a program received.
+
+The window is a convenience, not a durability guarantee. Nothing is cancelled when it expires, and no execution changes state because a start call stopped waiting. Measured admission-to-settle latency is about 50ms for `pipe` and about 260ms for `pty`, so the default covers what it is meant to cover.
 
 ### 3.1a Result channels
 
@@ -240,6 +246,7 @@ Five facts determine whether a completion event is delivered:
 | Fact | Effect |
 |---|---|
 | A `shell_await` on this handle returns its terminal state | `consumedByAwait = true`; no follow-up event |
+| The settle lands inside a `shell_start` inline window | the start result carries it; no follow-up event |
 | `notifyOnCompletion` is true and no await consumed it | enqueue a completion record |
 | The agent is busy, `delivery: "steer"` (default) | records are coalesced and steered before the next LLM call |
 | The agent is busy, `delivery: "settle"` | records are coalesced and injected once at `agent_before_settle` |

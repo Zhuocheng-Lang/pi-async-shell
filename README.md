@@ -41,7 +41,7 @@ Show only test failures with surrounding context.
 The corresponding tool sequence is:
 
 ```ts
-// 1. Start returns immediately with an id such as sh_1234abcd.
+// 1. Start returns a handle, or the result itself if the command settles within 1s.
 shell_start({
   command: "pnpm run dev -- --port 3000",
   name: "dev server"
