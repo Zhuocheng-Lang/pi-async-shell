@@ -2,7 +2,7 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
-## [Unreleased]
+## [0.2.0-beta.2] - 2026-11-20
 
 ### Added
 
@@ -38,6 +38,8 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 - `pnpm test` discovers the TypeScript test files on Node.js 22. `node --test tests/` matched no `.ts` files on the declared minimum version and failed with `MODULE_NOT_FOUND`; both test scripts now pass an explicit glob to the test runner, which discovers the same test files on Node.js 22.19.0 and 26.13.1.
 
 ## [0.2.0-beta.1] - 2026-11-17
+
+_Never published: the npm registry accepted the upload as staged and then wedged the version number (npm/cli#9889). 0.2.0-beta.2 carries this section's content._
 
 ### Added
 
