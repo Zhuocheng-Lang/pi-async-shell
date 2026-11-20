@@ -6,6 +6,7 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 
 ### Added
 
+- `PI_ASYNC_SHELL_COALESCE_MS` sets the window in which settles merge into one completion message. The default stays 150 ms; `0` sends every settle on its own.
 - `shell_start inlineSettleMs` (default `1000`). A command that settles inside the window returns its status, exit code and output tail in the start call itself, so a fast command costs one tool round trip instead of two and no `shell_await` follows. The settle is then not announced again as a completion message. A command that outlives the window keeps the handle it always returned and still announces its own completion. `0` restores the return-immediately behaviour. A trivial `pipe` command settles in about 50ms and a `pty` one in about 260ms in the end-to-end suite.
 - `shell_start delivery: "steer" | "settle"`. A completion that lands while the agent is running is steered in before the next LLM call; `settle` holds it for the settle boundary.
 - CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md, issue and pull request templates, a CI workflow, and .editorconfig.

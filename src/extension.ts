@@ -308,6 +308,17 @@ function handleSettle(handle: ShellHandle, record: CompletionRecord): void {
 }
 
 /**
+ * How long a settle waits for its siblings before one message carries them all.
+ * Settles that share a window travel together; a window of 0 sends each one on
+ * its own.
+ */
+function coalesceWindowMs(): number {
+  const raw = process.env.PI_ASYNC_SHELL_COALESCE_MS;
+  const parsed = raw === undefined || raw.trim() === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 150;
+}
+
+/**
  * Coalescing is not just a turn-boundary concern. Three commands that settle
  * within a few milliseconds of each other would otherwise produce three
  * messages for one decision. A running agent waits the same short window as an
@@ -318,7 +329,7 @@ function scheduleFlush(): void {
   state.flushTimer = setTimeout(() => {
     state.flushTimer = undefined;
     flushCompletions();
-  }, 150);
+  }, coalesceWindowMs());
   state.flushTimer.unref?.();
 }
 

@@ -159,6 +159,7 @@ pi-background-tasks 还提供委派 Agent 和 Fusion 工作流。保留这些工
 - 运行状态位于 .pi/async-shell/。扩展会创建内容为 * 的局部 .gitignore，不覆盖已有内容。
 - pipe 日志默认上限 100 MiB（PI_ASYNC_SHELL_MAX_LOG_BYTES）。达到上限后停止追加日志，但继续排空 stdout/stderr，不会因输出过多而阻塞或杀掉命令。
 - PTY 记录由 script(1) 直写磁盘，不使用 pipe 上限。对长期且大量输出的 PTY 程序设置 timeoutSeconds，并监控磁盘。
+- 结算时间接近的完成消息会合并成一条。合并窗口默认 150 ms，可用 PI_ASYNC_SHELL_COALESCE_MS 调整；设为 0 则每条单独发送。
 - GC 在注册表启动时运行，之后每小时运行。默认清理超过 24 小时的已终止记录；超过 100 条时，也会清理经过五分钟宽限的旧记录。运行中、非终止、受保护及当前会话记录绝不回收。可通过 PI_ASYNC_SHELL_GC_RETENTION_MS 和 PI_ASYNC_SHELL_GC_MAX_RECORDS 调整。
 - 取消不是回滚，环境过滤也不是安全沙箱。命令仍拥有用户的文件系统与网络权限。
 
