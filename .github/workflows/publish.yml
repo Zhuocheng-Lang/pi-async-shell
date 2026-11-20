@@ -39,6 +39,9 @@ jobs:
         with:
           node-version: '26'
           cache: pnpm
+          # Writes //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} into the
+          # runner's .npmrc, which is how the fallback token reaches pnpm.
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -56,5 +59,12 @@ jobs:
       # --no-git-checks: a tag checkout is a detached HEAD, which pnpm refuses
       # by default; --tag is explicit because publishConfig.tag is not honoured
       # by pnpm and the workflow should not depend on the default.
+      #
+      # Two credentials are accepted. A configured npm Trusted Publisher wins,
+      # because the CLI prefers the OIDC token when the environment offers one.
+      # Without it, the NPM_TOKEN secret is the fallback, so the pipeline works
+      # before that web configuration exists.
       - name: Publish
         run: pnpm publish --no-git-checks --tag "${{ inputs.tag || 'latest' }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
