@@ -74,7 +74,8 @@ export interface ShellAwaitParams {
 export interface ShellReadParams {
   id: string;
   stream?: "combined" | "stdout" | "stderr" | "ptyView";
-  mode?: "tail" | "head" | "offset" | "grep";
+  /** "all" is a bounded alias for a head read; page with offset for the rest. */
+  mode?: "tail" | "head" | "offset" | "grep" | "all";
   lines?: number;
   maxBytes?: number;
   lineOffset?: number;
@@ -145,6 +146,8 @@ export interface ShellHandle {
   endedAt?: number;
   exitCode?: number | null;
   signal?: string | null;
+  /** How a pipeline's status was determined, when the command contains one. */
+  exitSource?: "pipefail" | "last-command";
   log: LogPaths;
   bytes: ByteCounts;
   error?: string;
@@ -224,6 +227,7 @@ export interface CompletionRecord {
   status: ShellStatus;
   exitCode?: number | null;
   signal?: string | null;
+  exitSource?: "pipefail" | "last-command";
   scope: Scope;
   binding: Binding;
   startedAt: number;

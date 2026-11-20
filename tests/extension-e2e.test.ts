@@ -7,7 +7,7 @@
  * model.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,8 +27,8 @@ const extensionPath = join(dirname(fileURLToPath(import.meta.url)), "..", "src",
 interface Harness {
   session: Awaited<ReturnType<typeof createAgentSession>>["session"];
   faux: ReturnType<typeof createFauxCore>;
-  callTool(name: string, params: Record<string, unknown>): Promise<string>;
-  callToolResult(name: string, params: Record<string, unknown>): Promise<any>;
+  callTool(name: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
+  callToolResult(name: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any>;
   toolSchema(name: string): Record<string, any>;
   refresh(): void;
   dispose(): void;
@@ -94,17 +94,17 @@ async function createHarness(): Promise<Harness> {
   };
   refresh();
 
-  const callToolResult = async (name: string, params: Record<string, unknown>) => {
+  const callToolResult = async (name: string, params: Record<string, unknown>, signal?: AbortSignal) => {
     const tool = tools.get(name);
     if (!tool) throw new Error(`tool not registered: ${name}`);
-    return tool.execute(`e2e-${name}`, params, undefined, undefined);
+    return tool.execute(`e2e-${name}`, params, signal, undefined);
   };
 
   return {
     session,
     faux,
-    async callTool(name, params) {
-      const result = await callToolResult(name, params);
+    async callTool(name, params, signal) {
+      const result = await callToolResult(name, params, signal);
       return (result?.content ?? [])
         .map((block: { type?: string; text?: string }) => (block.type === "text" ? block.text ?? "" : ""))
         .join("\n");
@@ -148,6 +148,12 @@ function customMessages(session: Harness["session"], type: string): { content?: 
   return (session.messages as unknown as { customType?: string; content?: unknown }[]).filter(
     (message) => message.customType === type,
   );
+}
+
+function completionForId(session: Harness["session"], id: string): string | undefined {
+  return customMessages(session, "async-shell-completion")
+    .map((message) => JSON.stringify(message.content))
+    .find((text) => text.includes(id));
 }
 
 function completionInContext(context: TranscriptContext): boolean {
@@ -203,7 +209,9 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
     assert.deepEqual(startSchema.properties.delivery.enum, ["steer", "settle"]);
     assert.equal(startSchema.properties.readiness, undefined);
     const awaitSchema = harness.toolSchema("shell_await");
-    assert.equal(awaitSchema.properties.waitMs.maximum, 50_000);
+    assert.equal(awaitSchema.properties.waitMs.maximum, undefined);
+    assert.equal(startSchema.properties.inlineSettleMs.maximum, undefined);
+    assert.deepEqual(harness.toolSchema("shell_read").properties.mode.enum, ["tail", "head", "offset", "grep", "all"]);
     assert.equal(awaitSchema.properties.cancelOnFirstFailure, undefined);
     assert.match(harness.session.systemPrompt, /shell_start runs commands with `\/bin\/sh -c <command>`/);
 
@@ -335,7 +343,7 @@ test("inlineSettleMs: 0 returns at once and leaves the completion channel alone"
   process.env.PI_ASYNC_SHELL = "/bin/sh";
   const harness = await createHarness();
   try {
-    assert.equal(harness.toolSchema("shell_start").properties.inlineSettleMs.maximum, 10_000);
+    assert.equal(harness.toolSchema("shell_start").properties.inlineSettleMs.maximum, undefined);
     const startedAt = Date.now();
     const started = await harness.callTool("shell_start", {
       command: "echo no-inline",
@@ -501,6 +509,155 @@ test("delivery settle holds a completion until the run has no more work", { time
     assert.equal(seen.length, 2, "settle must keep the run alive for the record");
     assert.equal(seen[0], false, "settle must not steer mid-run");
     assert.equal(seen[1], true, "the record must still reach the model");
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("oversized wait and inline-settle values are clamped with a visible note", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const started = await harness.callTool("shell_start", {
+      command: "echo clamped",
+      scope: "session",
+      inlineSettleMs: 99_999,
+      triggerOnCompletion: false,
+    });
+    assert.match(started, /inlineSettleMs 99999 clamped to 10000/);
+    assert.match(started, /Settled inside the 10\.0s inline window/);
+    assert.match(started, /--- tail ---[\s\S]*clamped/);
+    const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id);
+    const awaited = await harness.callTool("shell_await", {
+      ids: id,
+      waitMs: 99_999,
+      includeOutputPreview: false,
+    });
+    assert.match(awaited, /waitMs 99999 clamped to 50000/);
+    assert.match(awaited, /exit 0/);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("shell_read accepts mode all as a bounded read", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const started = await harness.callTool("shell_start", {
+      command: "echo all-mode",
+      scope: "session",
+      triggerOnCompletion: false,
+    });
+    const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id);
+    const read = await harness.callTool("shell_read", { id, mode: "all" });
+    assert.match(read, /all-mode/);
+    assert.match(read, /mode all is a bounded head read/);
+    assert.match(read, /use mode offset with nextByte\/nextLine to page/);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("bash pipelines report a failed stage and failure summaries carry the error", {
+  skip: !existsSync("/bin/bash"),
+  timeout: 120_000,
+}, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/bash";
+  const harness = await createHarness();
+  try {
+    const inline = await harness.callToolResult("shell_start", {
+      command: "false | tail -2",
+      scope: "session",
+      triggerOnCompletion: false,
+    });
+    assert.equal(inline.structuredContent.status, "failed");
+    assert.equal(inline.structuredContent.exitCode, 1);
+    assert.equal(inline.structuredContent.exitSource, "pipefail");
+    assert.match(
+      (inline.content as { text?: string }[]).map((block) => block.text ?? "").join("\n"),
+      /pipeline status: pipefail/,
+    );
+
+    const deferred = await harness.callTool("shell_start", {
+      command: "echo 'ERROR: boom' >&2; false | tail -2",
+      scope: "session",
+      inlineSettleMs: 0,
+      // No scripted response is queued here, so the record must arrive without
+      // starting a turn of its own.
+      triggerOnCompletion: false,
+    });
+    const id = deferred.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id);
+    assert.equal(await waitFor(() => Boolean(completionForId(harness.session, id))), true);
+    const summary = completionForId(harness.session, id) ?? "";
+    assert.match(summary, /exit: 1/);
+    assert.match(summary, /first error[\s\S]*ERROR: boom/);
+    assert.match(summary, /pipeline status: pipefail/);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("inline settle handles undefined and aborted signals without losing notifications", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const normal = await harness.callToolResult(
+      "shell_start",
+      { command: "echo explicit-undefined", scope: "session", triggerOnCompletion: false },
+      undefined,
+    );
+    assert.equal(normal.structuredContent.settledInline, true);
+    assert.match(
+      (normal.content as { text?: string }[]).map((block) => block.text ?? "").join("\n"),
+      /Settled inside/,
+    );
+
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const aborted = await harness.callToolResult(
+      "shell_start",
+      { command: "echo pre-aborted", scope: "session", inlineSettleMs: 1000, triggerOnCompletion: false },
+      preAborted.signal,
+    );
+    const abortedText = (aborted.content as { text?: string }[]).map((block) => block.text ?? "").join("\n");
+    assert.equal(aborted.structuredContent.settledInline, undefined);
+    assert.doesNotMatch(abortedText, /Settled inside/);
+    const abortedId = abortedText.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(abortedId);
+    assert.equal(await waitFor(() => Boolean(completionForId(harness.session, abortedId))), true);
+    const summary = completionForId(harness.session, abortedId) ?? "";
+    assert.match(summary, /exit: 0/);
+    assert.match(summary, /--- tail ---[\s\S]*pre-aborted/);
+
+    const midAbort = new AbortController();
+    const pending = harness.callToolResult(
+      "shell_start",
+      { command: "sleep 0.2; echo mid-aborted", scope: "session", inlineSettleMs: 1000, triggerOnCompletion: false },
+      midAbort.signal,
+    );
+    setTimeout(() => midAbort.abort(), 50);
+    const late = await pending;
+    assert.equal(late.structuredContent.settledInline, undefined);
+    const lateText = (late.content as { text?: string }[]).map((block) => block.text ?? "").join("\n");
+    const lateId = lateText.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(lateId);
+    assert.equal(await waitFor(() => Boolean(completionForId(harness.session, lateId))), true);
   } finally {
     harness.dispose();
     if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;

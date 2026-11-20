@@ -37,6 +37,8 @@ import {
 } from "./identity.ts";
 import {
   DEFAULT_MAX_LOG_BYTES,
+  MAX_READ_BYTES,
+  MAX_READ_LINES,
   readLog,
   readScreenLog,
   type ReadOutcome,
@@ -52,7 +54,7 @@ import {
   type RegistryPaths,
 } from "./paths.ts";
 import { readinessMarkerExists } from "./readiness.ts";
-import { resolveShell, type ShellPolicy } from "./shell-policy.ts";
+import { applyPipelineStatus, resolveShell, type ShellPolicy } from "./shell-policy.ts";
 import {
   fifoPath,
   ptyLauncher,
@@ -296,6 +298,9 @@ export class ShellRegistry {
       if (replay) return replay;
     }
 
+    // The handle keeps the caller's command; only the launch receives the
+    // prefix, so logs and metadata still describe what the caller asked for.
+    const launch = applyPipelineStatus(this.shell, params.command);
     const id = nextId();
     const dir = execDirFor(this.paths, scope, id);
     mkdirSync(dir, { recursive: true });
@@ -313,6 +318,7 @@ export class ShellRegistry {
       binding,
       status: "starting",
       startedAt,
+      exitSource: launch.exitSource,
       log,
       bytes: { stdout: 0, stderr: 0, combined: 0, capReached: false },
       consumedByAwait: false,
@@ -347,8 +353,9 @@ export class ShellRegistry {
     this.executions.set(id, exec);
 
     try {
-      if (binding === "pipe") await this.startPipe(exec, params, durable);
-      else await this.startPty(exec, params, durable);
+      const launchParams = { ...params, command: launch.command };
+      if (binding === "pipe") await this.startPipe(exec, launchParams, durable);
+      else await this.startPty(exec, launchParams, durable);
     } catch (error) {
       await this.finalize(exec, "failed", { error: (error as Error).message });
       throw error;
@@ -539,6 +546,7 @@ export class ShellRegistry {
       status,
       exitCode: exec.handle.exitCode ?? null,
       signal: exec.handle.signal ?? null,
+      exitSource: exec.handle.exitSource,
       scope: exec.handle.scope,
       binding: exec.handle.binding,
       startedAt: exec.handle.startedAt,
@@ -740,6 +748,16 @@ export class ShellRegistry {
 
   async read(params: ShellReadParams, signal?: AbortSignal): Promise<ShellReadResult> {
     if (signal?.aborted) throw new Error("shell_read aborted before opening the log");
+    // "all" arrived in real sessions as an agent assumption. It is a bounded
+    // head read, not an unbounded dump, and the note says how to page the rest.
+    const allNote =
+      params.mode === "all"
+        ? `mode all is a bounded head read (up to ${MAX_READ_LINES} lines / ${MAX_READ_BYTES / 1024} KiB); use mode offset with nextByte/nextLine to page`
+        : undefined;
+    const effective: ShellReadParams =
+      params.mode === "all"
+        ? { ...params, mode: "head", lines: params.lines ?? MAX_READ_LINES, maxBytes: params.maxBytes ?? MAX_READ_BYTES }
+        : params;
     const exec = this.executions.get(params.id);
     const handle = exec?.handle ?? this.readMeta(params.id)?.handle;
     if (!handle) throw new Error(`unknown handle: ${params.id}`);
@@ -749,7 +767,7 @@ export class ShellRegistry {
     if (stream === "ptyView" && handle.log.ptyView) {
       // A terminal recording is replayed into a viewport: the caller asked what
       // is on the screen, not which bytes the program wrote to get there.
-      const outcome = await readScreenLog(handle.log.ptyView, params, readScreenSize(handle.log.dir));
+      const outcome = await readScreenLog(handle.log.ptyView, effective, readScreenSize(handle.log.dir));
       return {
         id: handle.id,
         status: handle.status,
@@ -760,7 +778,7 @@ export class ShellRegistry {
         totalBytes: outcome.totalBytes,
         range: outcome.range,
         fullLogPath: handle.log.ptyView,
-        note: outcome.note,
+        note: [allNote, outcome.note].filter(Boolean).join("; ") || undefined,
       };
     }
     if (stream === "ptyView") {
@@ -780,7 +798,7 @@ export class ShellRegistry {
 
     const path = this.streamPathFromHandle(handle, stream);
     if (signal?.aborted) throw new Error("shell_read aborted before opening the log");
-    const outcome: ReadOutcome = await readLog(path, { ...params, stream });
+    const outcome: ReadOutcome = await readLog(path, { ...effective, stream });
     return {
       id: handle.id,
       status: handle.status,
@@ -791,7 +809,7 @@ export class ShellRegistry {
       totalBytes: outcome.totalBytes,
       range: outcome.range,
       fullLogPath: path,
-      note: note ?? outcome.note,
+      note: [note, allNote, outcome.note].filter(Boolean).join("; ") || undefined,
     };
   }
 

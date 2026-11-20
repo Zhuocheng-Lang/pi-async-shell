@@ -67,6 +67,15 @@ shell_read({
 
 The package includes an async-shell skill with server, readiness-marker, test, promotion, and PTY recipes.
 
+## Hard rules from dogfooding
+
+- Use shell_start for long, parallel, or log-worthy work. Keep the bash tool for commands that finish in about a second.
+- Do not pipe output to tail, head, grep, or wc. A pipe truncates the durable log before shell_read can search it, and on a shell without pipefail it also replaces the source exit code. Use shell_read modes tail, grep, offset, or all instead.
+- Pass cwd to shell_start instead of prefixing the command with cd.
+- Use one long blocking await per codemode script, leave room in the 60-second budget, and end the turn after a full-length wait. Completion delivery wakes the next decision.
+- Pipelines on bash-like shells run with set -o pipefail; any stage failure fails the command. The /bin/sh fallback reports only the last stage and labels the handle with exitSource: last-command.
+- waitMs above 50000 and inlineSettleMs above 10000 are clamped with a note, not rejected.
+
 ## Use a ready marker when output is ambiguous
 
 Every command receives PI_ASYNC_SHELL_EXEC_DIR. Create ready inside that directory after a real health check:
@@ -110,13 +119,13 @@ scope turn is intentionally absent. Ending a turn never cancels a session comman
 |---|---|
 | shell_start | Start with session/workspace ownership and pipe/pty I/O. |
 | shell_await | Wait for exit, the ready marker, or an output regular expression. |
-| shell_read | Read tail, head, offsets, or grep results from bounded log slices. |
+| shell_read | Read tail, head, offsets, grep results, or a bounded all view from log slices. |
 | shell_promote | Move live session work to workspace ownership. |
 | shell_send | Send text or key chords to a pty through its durable stdin FIFO. |
 | shell_cancel | Run the signal ladder and verify process-tree cleanup. |
 | shell_status | Inspect current handles; do not use it as a polling loop. |
 
-shell_await waitMs defaults to 30000 and has a maximum of 50000. This leaves room in codemode's 60-second default script budget. End the turn and use completion delivery for longer waits. A timeout or aborted wait never cancels the command.
+shell_await waitMs defaults to 30000 and is clamped to 50000; an over-limit value is reported in the result note. This leaves room in codemode's 60-second default script budget. After a full-length wait, end the turn and let completion delivery wake you. A timeout or aborted wait never cancels the command. shell_read mode all is a bounded head read (2000 lines / 50 KiB) whose note explains paging with offset.
 
 ## How a completion reaches the agent
 
@@ -129,7 +138,7 @@ A command that settles while nothing is awaiting it produces one completion mess
 | notifyOnCompletion: false | No completion message; the record stays on disk. |
 | triggerOnCompletion: false | An idle session stores the record without starting a turn. |
 
-Records that settle within the same 150 ms window travel as one message. A shell_await that consumed a handle suppresses its completion, and a workspace record never starts a turn by itself.
+Completion messages and await results carry the exit code and a bounded output excerpt: the tail on success, or the first error block plus tail on failure. Records that settle within the same 150 ms window travel as one message. A shell_await that consumed a handle suppresses its completion, and a workspace record never starts a turn by itself.
 
 ## Coexist with pi-background-tasks
 

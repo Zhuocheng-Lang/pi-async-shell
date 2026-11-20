@@ -13,6 +13,7 @@ export interface ShellPolicy {
 }
 
 const POSIX_SHELLS = new Set(["sh", "bash", "dash", "zsh", "ksh", "ash"]);
+const PIPEFAIL_SHELLS = new Set(["bash", "zsh", "ksh"]);
 
 /**
  * Match Pi's bash tool: ambient $SHELL selects a login shell, not a script
@@ -30,6 +31,53 @@ export function resolveShell(env: NodeJS.ProcessEnv = process.env): ShellPolicy 
 function isPosix(shell: string): boolean {
   const base = shell.split("/").pop() ?? shell;
   return POSIX_SHELLS.has(base);
+}
+
+/** True when the chosen interpreter accepts `set -o pipefail`. */
+export function supportsPipefail(shell: string): boolean {
+  return PIPEFAIL_SHELLS.has(shell.split("/").pop() ?? shell);
+}
+
+/** Find a real pipeline, ignoring quotes, escapes, comments, and `||`. */
+function hasPipeline(command: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "#" && (index === 0 || /\s/.test(command[index - 1]))) {
+      const newline = command.indexOf("\n", index);
+      if (newline < 0) return false;
+      index = newline;
+      continue;
+    }
+    if (char === "|" && command[index + 1] !== "|" && command[index - 1] !== "|") return true;
+  }
+  return false;
+}
+
+/**
+ * Pipeline status must not silently collapse to the last stage. Bash-like
+ * interpreters get pipefail; the POSIX fallback records that only the last
+ * stage determines the exit code.
+ */
+export function applyPipelineStatus(
+  policy: ShellPolicy,
+  command: string,
+): { command: string; exitSource?: "pipefail" | "last-command" } {
+  if (!hasPipeline(command)) return { command };
+  if (supportsPipefail(policy.shell)) return { command: `set -o pipefail; ${command}`, exitSource: "pipefail" };
+  return { command, exitSource: "last-command" };
 }
 
 /** The one-line shell policy included in the active tools' prompt guidelines. */

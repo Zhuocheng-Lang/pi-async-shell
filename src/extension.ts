@@ -13,7 +13,7 @@ import { StringEnum, type JsonObject } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { realpathSync } from "node:fs";
 import { assertLinux } from "./core/identity.ts";
-import { ShellRegistry } from "./core/registry.ts";
+import { DEFAULT_WAIT_MS, MAX_WAIT_MS, ShellRegistry } from "./core/registry.ts";
 import { claimHandoff, handoffKey, publishHandoff } from "./core/reload-hub.ts";
 import { acquireWorkspaceLock, releaseWorkspaceLock } from "./core/workspace-lock.ts";
 import { describeShellPolicy, resolveShell } from "./core/shell-policy.ts";
@@ -47,6 +47,8 @@ interface ExtensionState {
   delivered: Set<string>;
   /** Executions whose settle an open tool call is returning itself. */
   settleClaims: Set<string>;
+  /** Settles that arrived under a claim, held until that call decides. */
+  heldSettles: Map<string, CompletionRecord>;
   shellPolicyText: string;
 }
 
@@ -56,6 +58,7 @@ const state: ExtensionState = {
   pending: [],
   delivered: new Set(),
   settleClaims: new Set(),
+  heldSettles: new Map(),
   shellPolicyText: "",
 };
 
@@ -108,6 +111,7 @@ const handleSchema = Type.Object({
   log: logSchema,
   bytes: bytesSchema,
   error: Type.Optional(Type.String()),
+  exitSource: Type.Optional(StringEnum(["pipefail", "last-command"] as const)),
   consumedByAwait: Type.Optional(Type.Boolean()),
   notifyOnCompletion: Type.Optional(Type.Boolean()),
   delivery: Type.Optional(deliveryEnum),
@@ -213,7 +217,47 @@ function describeHandle(handle: ShellHandle): string {
   parts.push(`${formatBytes(handle.bytes.combined)} logged`);
   if (handle.bytes.capReached) parts.push("log cap reached");
   if (handle.error) parts.push(`error: ${handle.error}`);
+  if (handle.exitSource === "pipefail") parts.push("pipeline status: pipefail");
+  else if (handle.exitSource === "last-command") parts.push("pipeline status: last stage only");
   return parts.join(" · ");
+}
+
+/** A bounded, human-readable excerpt of the log for an outcome message. */
+function outcomeExcerpt(text: string | undefined, failed: boolean): string[] {
+  const lines = (text ?? "")
+    .split("\n")
+    .map((line) => line.replace(/\s+$/, "").slice(0, 500))
+    .filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return [];
+  const tail = lines.slice(-10);
+  const tailBlock = ["  --- tail ---", ...tail.map((line) => `  ${line}`)];
+  if (!failed) return tailBlock;
+  const errorIndex = lines.findIndex((line) => /error|fail|fatal|exception|panic|Traceback/i.test(line));
+  if (errorIndex < 0) return tailBlock;
+  const from = Math.max(0, errorIndex - 2);
+  const to = Math.min(lines.length, errorIndex + 8);
+  const block = ["  --- first error ---", ...lines.slice(from, to).map((line) => `  ${line}`)];
+  const tailFrom = Math.max(to, lines.length - 6);
+  if (tailFrom < lines.length) {
+    block.push("  --- tail ---", ...lines.slice(tailFrom).map((line) => `  ${line}`));
+  }
+  return block;
+}
+
+/** Completion and await messages carry the outcome, not just a log path. */
+async function readOutcomeExcerpt(
+  registry: ShellRegistry | undefined,
+  id: string,
+  status: ShellHandle["status"],
+  lines = 20,
+): Promise<string[]> {
+  if (!registry) return [];
+  try {
+    const read = await registry.read({ id, mode: "tail", lines, stream: "combined" });
+    return outcomeExcerpt(read.text, status === "failed" || status === "timed-out");
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -229,9 +273,11 @@ function sendHeadline(result: ShellSendResult): string {
  * Hold a `shell_start` call open long enough for a command to finish inside it.
  *
  * A settle reaches `onSettle` before any waiter can observe it, so the id is
- * claimed for as long as the call waits. The claim is released when the wait
- * ends without a settle, and a command that outlives the window announces its
- * own completion exactly as before.
+ * claimed for as long as the call waits. A record that arrives under the claim
+ * is held, not dropped: the call either reports it inline or hands it back to
+ * the completion channel. The claim is released when the wait ends without a
+ * settle, and a command that outlives the window announces its own completion
+ * exactly as before.
  */
 async function holdForSettle(
   registry: ShellRegistry,
@@ -239,23 +285,40 @@ async function holdForSettle(
   inlineSettleMs: number,
   signal?: AbortSignal,
 ): Promise<ShellHandle | undefined> {
-  if (inlineSettleMs <= 0) return undefined;
+  // An aborted tool call must not consume the settle: its result may never
+  // reach the model, and the completion channel still has to report the run.
+  if (inlineSettleMs <= 0 || signal?.aborted) return undefined;
   state.settleClaims.add(handle.id);
   try {
     const outcome = await registry.awaitHandles(
       { ids: handle.id, waitMs: inlineSettleMs, includeOutputPreview: false },
       signal,
     );
+    if (signal?.aborted) return undefined;
     const settled = outcome.outcomes.find((candidate) => candidate.id === handle.id);
     if (!settled) return undefined;
     // This call is the delivery. A settle that raced the admission is already
     // queued, so it is dropped here instead of arriving a second time.
+    state.heldSettles.delete(settled.id);
     state.delivered.add(settled.id);
     state.pending = state.pending.filter((record) => record.id !== settled.id);
     return settled;
   } finally {
     state.settleClaims.delete(handle.id);
+    releaseHeldSettle(handle.id);
   }
+}
+
+/**
+ * A held record belongs to the call that owns the claim. Reaching here without
+ * a delivery means that call returned without one — it was aborted, or the
+ * settle lost the race — so the completion channel reports the run instead.
+ */
+function releaseHeldSettle(id: string): void {
+  const held = state.heldSettles.get(id);
+  if (!held) return;
+  state.heldSettles.delete(id);
+  enqueueCompletion(held);
 }
 
 /** A start result is a handle; a settled one also carries its output. */
@@ -263,16 +326,15 @@ function startText(
   handle: ShellHandle,
   inlineSettleMs: number | undefined,
   preview: string | undefined,
+  note?: string,
 ): string {
   const lines = [`Started ${describeHandle(handle)}`];
+  if (note) lines.push(`  note: ${note}`);
   if (inlineSettleMs !== undefined) {
     lines.push(
       `Settled inside the ${formatDuration(inlineSettleMs)} inline window, so the result is here and no shell_await is needed.`,
     );
-    if (preview?.trim()) {
-      lines.push("  --- tail ---");
-      for (const line of preview.split("\n")) lines.push(`  ${line}`);
-    }
+    lines.push(...outcomeExcerpt(preview, handle.status === "failed" || handle.status === "timed-out"));
   }
   lines.push(`log: ${handle.log.combined}`);
   return lines.join("\n");
@@ -296,13 +358,15 @@ function enqueueCompletion(record: CompletionRecord): void {
 
 /**
  * The one place a settle becomes a message. A record is skipped when the caller
- * opted out, when an await already reported it, or when a tool call that is
- * still open is about to return it inline.
+ * opted out or an await already reported it; a record that settles while a
+ * start call holds the claim is held for that call to deliver or hand back.
  */
 function handleSettle(handle: ShellHandle, record: CompletionRecord): void {
-  const reportedInline = state.settleClaims.has(handle.id);
-  if (!reportedInline && !handle.consumedByAwait && handle.notifyOnCompletion !== false) {
-    enqueueCompletion(record);
+  if (!handle.consumedByAwait && handle.notifyOnCompletion !== false) {
+    // An open start call decides this record's fate, so it is held rather than
+    // announced. Dropping it here would lose the run when that call is aborted.
+    if (state.settleClaims.has(handle.id)) state.heldSettles.set(handle.id, record);
+    else enqueueCompletion(record);
   }
   updateUi();
 }
@@ -328,12 +392,14 @@ function scheduleFlush(): void {
   if (state.flushTimer) return;
   state.flushTimer = setTimeout(() => {
     state.flushTimer = undefined;
-    flushCompletions();
+    // Nothing awaits this timer, and a rejection here would reach the host as
+    // an unhandled rejection instead of a delivered completion.
+    void flushCompletions().catch(() => undefined);
   }, coalesceWindowMs());
   state.flushTimer.unref?.();
 }
 
-function completionMessage(records: CompletionRecord[]): string {
+async function completionMessage(records: CompletionRecord[]): Promise<string> {
   const lines = ["<async-shell-completion>"];
   for (const record of records) {
     const outcome =
@@ -350,6 +416,11 @@ function completionMessage(records: CompletionRecord[]): string {
       `${record.id} "${record.name}" ${outcome} after ${formatDuration(record.durationMs)} · scope ${record.scope} · binding ${record.binding}`,
     );
     if (record.error) lines.push(`  error: ${record.error}`);
+    if (record.exitSource === "pipefail") lines.push("  pipeline status: pipefail (any stage failure fails the command)");
+    else if (record.exitSource === "last-command") lines.push("  pipeline status: last stage only (shell has no pipefail)");
+    lines.push(`  exit: ${record.exitCode ?? "unknown"}`);
+    if (record.signal) lines.push(`  signal: ${record.signal}`);
+    lines.push(...(await readOutcomeExcerpt(state.registry, record.id, record.status)));
     lines.push(`  log: ${record.log.combined} (${formatBytes(record.bytes.combined)})`);
   }
   lines.push("Read output with shell_read; do not re-run a command that already completed.");
@@ -357,7 +428,7 @@ function completionMessage(records: CompletionRecord[]): string {
   return lines.join("\n");
 }
 
-function flushCompletions(): void {
+async function flushCompletions(): Promise<void> {
   if (state.flushTimer) {
     clearTimeout(state.flushTimer);
     state.flushTimer = undefined;
@@ -371,7 +442,7 @@ function flushCompletions(): void {
   if (records.length === 0) return;
   state.pending = state.pending.filter((record) => !records.includes(record));
   for (const record of records) state.delivered.add(record.id);
-  const text = completionMessage(records);
+  const text = await completionMessage(records);
   // triggerOnCompletion decides whether an idle session starts a turn. A
   // workspace record defaults to no notification at all, so it never wakes one.
   const shouldTrigger = records.some(
@@ -482,8 +553,11 @@ const promptSnippet =
 const basePromptGuidelines = [
   "Use shell_start for commands that are slow, that should run in parallel, that must outlive the turn, or whose full log matters; keep bash for commands that finish in a second or two and need no log.",
   "shell_start returns a handle immediately, except that a command settling within inlineSettleMs (default 1000) returns its status and output tail in that same call; then there is nothing to await. Do independent work first, then call shell_await; do not sleep or poll shell_status in a loop.",
-  "shell_await uses waitMs up to 50000 (default 30000). In codemode leave room in the 60-second script budget; end the turn for longer waits.",
-  "shell_read returns a bounded slice. Use mode grep or offset to find what matters instead of reading a whole log.",
+  "shell_await uses waitMs up to 50000 (default 30000); larger values are clamped and noted, not rejected. Use one long wait per script, leave room in codemode's 60-second budget, then end the turn and let completion delivery wake you.",
+  "Do not pipe command output to tail, head, grep, or wc: it caps the durable log before shell_read can search it, and on a shell without pipefail it also replaces the source exit code. Run the command whole and use shell_read with mode tail, grep, or offset.",
+  "Use shell_start.cwd instead of prefixing the command with cd, so the record and the process agree on the working directory.",
+  "Pipelines in a bash-like shell run with pipefail; any stage failure fails the command. A POSIX fallback reports only the last stage, and the handle names the exitSource.",
+  "shell_read returns a bounded slice. Use mode grep or offset to find what matters; mode all is a bounded head read with paging guidance in its note.",
   "shell_send requires binding pty; a pipe execution has no terminal and refuses stdin.",
   "shell_read with stream ptyView returns the rendered screen of a pty execution; use it after shell_send to see what a terminal UI is showing.",
   "shell_cancel verifies that the process tree is gone; cancellation stops processes but does not roll back their effects.",
@@ -504,6 +578,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     // No tool call survives an activation, so no claim can either. A record
     // that settles after this point must be able to announce itself.
     state.settleClaims.clear();
+    state.heldSettles.clear();
     state.ctx = ctx;
     const cwd = realpathSync(ctx.cwd);
     const sessionId = ctx.sessionManager.getSessionId();
@@ -557,6 +632,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     state.registry = undefined;
     state.pending = [];
     state.settleClaims.clear();
+    state.heldSettles.clear();
     state.ctx?.ui.setStatus(STATUS_KEY, undefined);
   });
 
@@ -575,7 +651,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       entries.push({
         type: "custom_message",
         customType: COMPLETION_TYPE,
-        content: completionMessage(records),
+        content: await completionMessage(records),
         display: true,
       });
       continueTurn = true;
@@ -614,18 +690,19 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       inlineSettleMs: Type.Optional(
         Type.Number({
           minimum: 0,
-          maximum: MAX_INLINE_SETTLE_MS,
-          description: `Hold this call open this long for a settle. Default ${DEFAULT_INLINE_SETTLE_MS}; 0 returns the handle at once.`,
+          description: `Hold this call open this long for a settle. Default ${DEFAULT_INLINE_SETTLE_MS}; 0 returns the handle at once. Values above ${MAX_INLINE_SETTLE_MS} are clamped, not rejected.`,
         }),
       ),
     }),
     outputSchema: startResultSchema,
     async execute(_toolCallId, params, signal) {
       const registry = requireRegistry();
-      const inlineSettleMs = Math.max(
-        0,
-        Math.min(MAX_INLINE_SETTLE_MS, params.inlineSettleMs ?? DEFAULT_INLINE_SETTLE_MS),
-      );
+      const requestedInlineSettleMs = params.inlineSettleMs ?? DEFAULT_INLINE_SETTLE_MS;
+      const inlineSettleMs = Math.max(0, Math.min(MAX_INLINE_SETTLE_MS, requestedInlineSettleMs));
+      const inlineNote =
+        requestedInlineSettleMs > MAX_INLINE_SETTLE_MS
+          ? `inlineSettleMs ${requestedInlineSettleMs} clamped to ${MAX_INLINE_SETTLE_MS}; the command keeps its handle if it outlives that window.`
+          : undefined;
       const handle = await registry.start(params as never);
       const settled = await holdForSettle(registry, handle, inlineSettleMs, signal);
       const reported = settled ?? handle;
@@ -642,7 +719,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
         content: [
           {
             type: "text" as const,
-            text: startText(reported, settled ? inlineSettleMs : undefined, preview),
+            text: startText(reported, settled ? inlineSettleMs : undefined, preview, inlineNote),
           },
         ],
         structuredContent: json(settled ? { ...settled, settledInline: true } : handle),
@@ -655,7 +732,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     name: "shell_await",
     label: "Await async shell",
     description:
-      "Wait for exit, $PI_ASYNC_SHELL_EXEC_DIR/ready, or an output regex. Timeout never cancels. waitMs defaults to 30000 and is capped at 50000 for codemode's 60-second default budget.",
+      "Wait for exit, $PI_ASYNC_SHELL_EXEC_DIR/ready, or an output regex. Timeout never cancels. waitMs defaults to 30000 and is clamped to 50000 rather than rejected; values above the cap leave a note in the result. In codemode, end the turn after a full-length wait and rely on completion delivery.",
     promptGuidelines,
     parameters: Type.Object({
       ids: Type.Union([Type.String(), Type.Array(Type.String())]),
@@ -672,14 +749,23 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
           }),
         ]),
       ),
-      waitMs: Type.Optional(Type.Number({ minimum: 0, maximum: 50_000, description: "Default 30000; max 50000" })),
+      waitMs: Type.Optional(
+        Type.Number({ minimum: 0, description: "Default 30000; values above 50000 are clamped, not rejected" }),
+      ),
       includeOutputPreview: Type.Optional(Type.Boolean()),
     }),
     outputSchema: awaitResultSchema,
     async execute(_toolCallId, params, signal) {
       const registry = requireRegistry();
-      const result = await registry.awaitHandles(params as never, signal);
+      const requestedWaitMs = params.waitMs ?? DEFAULT_WAIT_MS;
+      const waitMs = Math.max(0, Math.min(MAX_WAIT_MS, requestedWaitMs));
+      const result = await registry.awaitHandles({ ...params, waitMs } as never, signal);
       const lines: string[] = [];
+      if (requestedWaitMs > MAX_WAIT_MS) {
+        lines.push(
+          `waitMs ${requestedWaitMs} clamped to ${MAX_WAIT_MS}; a completion message still wakes you when the command settles.`,
+        );
+      }
       if (result.matched) {
         lines.push(`Pattern matched in ${result.matched.id}: ${result.matched.line}`);
       }
@@ -688,10 +774,12 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
         if (params.includeOutputPreview !== false) {
           try {
             const preview = await registry.read({ id: handle.id, mode: "tail", lines: 20 });
-            if (preview.text.trim()) {
-              lines.push("  --- tail ---");
-              for (const line of preview.text.split("\n")) lines.push(`  ${line}`);
-            }
+            lines.push(
+              ...outcomeExcerpt(
+                preview.text,
+                handle.status === "failed" || handle.status === "timed-out",
+              ),
+            );
           } catch {
             /* preview is optional */
           }
@@ -701,9 +789,15 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
         lines.push(`still running: ${describeHandle(handle)}`);
       }
       if (result.timedOutWaiting) {
-        lines.push(
-          "The wait expired. Nothing was killed. End the turn if the remaining work is long, or await again.",
-        );
+        if (waitMs >= MAX_WAIT_MS) {
+          lines.push(
+            "The full-length wait expired. Nothing was killed. End the turn; a completion message will wake you when the command settles. Do not issue another blocking await for the same work.",
+          );
+        } else {
+          lines.push(
+            "The wait expired. Nothing was killed. End the turn if the remaining work is long, or await again.",
+          );
+        }
       }
       return {
         content: [{ type: "text" as const, text: lines.join("\n") || "nothing to await" }],
@@ -717,12 +811,12 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     name: "shell_read",
     label: "Read async shell log",
     description:
-      "Read a bounded slice of an execution's durable output. Streams: combined, stdout, stderr, ptyView. Modes: tail, head, offset, grep. Hard cap: 2000 lines or 50 KiB per call. ptyView is the rendered terminal screen (a viewport, not a scrollback); combined is the byte stream.",
+      "Read a bounded slice of an execution's durable output. Streams: combined, stdout, stderr, ptyView. Modes: tail, head, offset, grep, all (a bounded head read with paging guidance in the note). Hard cap: 2000 lines or 50 KiB per call. ptyView is the rendered terminal screen (a viewport, not a scrollback); combined is the byte stream.",
     promptGuidelines,
     parameters: Type.Object({
       id: Type.String(),
       stream: Type.Optional(streamEnum),
-      mode: Type.Optional(StringEnum(["tail", "head", "offset", "grep"] as const)),
+      mode: Type.Optional(StringEnum(["tail", "head", "offset", "grep", "all"] as const)),
       lines: Type.Optional(Type.Number()),
       maxBytes: Type.Optional(Type.Number()),
       lineOffset: Type.Optional(Type.Number()),

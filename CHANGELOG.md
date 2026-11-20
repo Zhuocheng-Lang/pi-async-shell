@@ -2,6 +2,19 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- `shell_read` accepts `mode: "all"` as a bounded head read (2000 lines / 50 KiB) with paging guidance in the note.
+- Pipeline commands record `exitSource`: `pipefail` on bash-like shells, `last-command` on the POSIX fallback. Completion messages and await results include exit codes and bounded output excerpts.
+
+### Fixed
+
+- `shell_await.waitMs` and `shell_start.inlineSettleMs` accept values above their practical caps and clamp them in the handler with a visible note instead of failing schema validation.
+- Bash-like shells launch pipeline commands with `set -o pipefail`, so a failing stage no longer hides behind a successful `tail`.
+- An aborted inline-settle call no longer consumes the completion; the notification channel still reports the execution.
+
 ## [0.2.0-beta.3] - 2026-11-20
 
 ### Changed

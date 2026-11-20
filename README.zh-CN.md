@@ -67,6 +67,15 @@ shell_read({
 
 包内附带 async-shell Skill，包含服务器、就绪标记、测试、提升和 PTY 工作流。
 
+## dogfooding 得出的硬性规则
+
+- 慢任务、并行任务或需要日志的任务用 shell_start；约一秒内结束的命令留在 bash 工具。
+- 不要把输出通过管道传给 tail、head、grep 或 wc：管道会在 shell_read 检索前截断持久日志，在没有 pipefail 的 shell 上还会掩盖源命令退出码。改用 shell_read 的 tail、grep、offset 或 all 模式。
+- 用 shell_start 的 cwd 指定目录，不要在命令前加 cd。
+- 每个 codemode 脚本最多做一次长阻塞 await，给 60 秒脚本预算留出余量；满时长等待后结束轮次，由完成通知唤醒下一轮。
+- bash 类 shell 的管道自动启用 set -o pipefail，任一阶段失败都会让命令失败；/bin/sh 回退只看最后一个阶段，并在句柄上标注 exitSource: last-command。
+- waitMs 超过 50000、inlineSettleMs 超过 10000 会被钳制并给出说明，不会因参数校验失败。
+
 ## 输出不固定时使用 ready 标记
 
 每个命令都会获得 PI_ASYNC_SHELL_EXEC_DIR。健康检查真正通过后，在该目录创建 ready 文件：
@@ -110,13 +119,13 @@ scope turn 已移除。正常结束轮次不会取消 session 命令。
 |---|---|
 | shell_start | 以 session/workspace 所有权和 pipe/pty I/O 启动。 |
 | shell_await | 等待退出、ready 标记或输出正则。 |
-| shell_read | 有界读取 tail、head、offset 或 grep 结果。 |
+| shell_read | 有界读取 tail、head、offset、grep 结果或有界的 all 视图。 |
 | shell_promote | 将存活任务提升到 workspace 所有权。 |
 | shell_send | 通过持久 stdin FIFO 向 pty 写入文本或按键。 |
 | shell_cancel | 执行信号阶梯并验证进程树已清理。 |
 | shell_status | 查看当前句柄；不要用它轮询。 |
 
-shell_await 的 waitMs 默认 30000，最大 50000，为 codemode 默认 60 秒脚本预算留出余量。更长的等待应结束轮次并依靠完成通知。等待超时或中止绝不会取消命令。
+shell_await 的 waitMs 默认 30000，超过 50000 会被钳制并在结果中注明，为 codemode 默认 60 秒脚本预算留出余量。满时长等待后应结束轮次并依靠完成通知。等待超时或中止绝不会取消命令。shell_read 的 all 模式是有界的 head 读取（2000 行 / 50 KiB），说明信息会告知如何用 offset 翻页。
 
 ## 完成通知如何到达 Agent
 
@@ -129,7 +138,7 @@ shell_await 的 waitMs 默认 30000，最大 50000，为 codemode 默认 60 秒�
 | notifyOnCompletion: false | 不产生完成消息；记录仍留在磁盘上。 |
 | triggerOnCompletion: false | 空闲会话只保存记录，不开启轮次。 |
 
-同一 150 ms 窗口内结束的记录合并为一条消息。被 shell_await 消费的句柄不再产生完成消息，workspace 记录也不会自行开启轮次。
+完成消息和 await 结果会给出退出码及有界的输出摘录：成功时显示 tail，失败时显示首个错误块和 tail。同一 150 ms 窗口内结束的记录合并为一条消息。被 shell_await 消费的句柄不再产生完成消息，workspace 记录也不会自行开启轮次。
 
 ## 与 pi-background-tasks 共存
 

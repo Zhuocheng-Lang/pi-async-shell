@@ -9,6 +9,17 @@ Use shell_start for work that should return a handle immediately. A command that
 
 Commands use /bin/bash -c by default, falling back to /bin/sh. Ambient $SHELL is ignored. PI_ASYNC_SHELL is an explicit override.
 
+## Hard rules
+
+- Start slow, parallel, or log-worthy work with shell_start. Keep Pi's bash tool only for commands that finish in about a second and need no log.
+- Do not pipe command output to tail, head, grep, or wc. A pipe truncates the durable log before shell_read can search it, and on a shell without pipefail it also replaces the source exit code. Run the command whole; use shell_read with mode tail, grep, offset, or all.
+- Pass cwd to shell_start instead of prefixing the command with cd, so the handle and the process agree on the working directory.
+- Put at most one long blocking await in a codemode script. Leave room in the 60-second script budget; after a full-length await, end the turn and let the completion message wake you instead of awaiting again.
+- Wait for readiness with until: pattern or a ready marker; do not poll shell_status or sleep in a loop.
+- Pipelines on bash-like shells run with set -o pipefail, so any failing stage fails the command. On the /bin/sh fallback, only the last stage sets the exit code; the handle and completion message name the exitSource.
+- Completion messages and await results include the exit code plus a bounded output excerpt. Read more only when the excerpt is not enough.
+- waitMs above 50000 and inlineSettleMs above 10000 are clamped with a note, not rejected. Do not rely on the larger value taking effect.
+
 ## Start a server and run dependent tests
 
 1. Start the server with shell_start. Use the default session scope and pipe binding.
@@ -92,7 +103,7 @@ Do not use scope turn; it no longer exists.
 
 ## Wait within the caller budget
 
-shell_await waitMs defaults to 30000 and has a maximum of 50000. In codemode, use a smaller value when the script has other work because the default script budget is 60 seconds. For longer waits, end the turn and rely on completion delivery instead of repeated polling.
+shell_await waitMs defaults to 30000 and is clamped to 50000; an over-limit value is reported in the result note. A full-length wait that times out tells you to end the turn: completion delivery starts the next decision, so repeated blocking waits waste the codemode script budget. shell_read mode all is a bounded head read (2000 lines / 50 KiB) whose note explains how to page with offset.
 
 Cancellation stops processes but does not roll back their effects. Use shell_cancel only when termination is intended.
 
