@@ -2,6 +2,12 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- `publishConfig.tag` is gone. npm honoured it while pnpm ignored it, so a manual `npm publish` went to `beta` and a `pnpm publish` went to `latest`. npm now refuses a prerelease without an explicit `--tag`, which is the honest failure; the release workflow always passes one.
+
 ## [0.2.0-beta.2] - 2026-11-20
 
 ### Added
