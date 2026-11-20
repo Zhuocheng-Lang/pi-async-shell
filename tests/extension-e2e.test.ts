@@ -384,13 +384,19 @@ test("three completions coalesce into one message", { timeout: 120_000 }, async 
   const previousShell = process.env.PI_ASYNC_SHELL;
   process.env.PI_ASYNC_SHELL = "/bin/sh";
   const harness = await createHarness();
+  // All three commands block on one file, so they settle together however slowly
+  // the machine started them. A fixed `sleep` let their settles straddle the
+  // 150ms coalescing window on a contended runner, which is a three-message
+  // delivery, not a regression.
+  const gate = join(mkdtempSync(join(tmpdir(), "pas-gate-")), "open");
+  const waitForGate = (label: string) => `while [ ! -f ${gate} ]; do sleep 0.01; done; echo ${label}`;
   try {
     harness.faux.setResponses([
       fauxAssistantMessage(
         [
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo one", scope: "session", inlineSettleMs: 0 }),
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo two", scope: "session", inlineSettleMs: 0 }),
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo three", scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: waitForGate("one"), scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: waitForGate("two"), scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: waitForGate("three"), scope: "session", inlineSettleMs: 0 }),
         ],
         { stopReason: "toolUse" },
       ),
@@ -398,15 +404,17 @@ test("three completions coalesce into one message", { timeout: 120_000 }, async 
       fauxAssistantMessage("acknowledged"),
     ]);
     await harness.session.prompt("start three quick commands and end the turn");
-    assert.equal(
-      await waitFor(() => customMessages(harness.session, "async-shell-completion").length > 0),
-      true,
-    );
+    // The turn is over, so these settles take the idle path and share one window.
+    writeFileSync(gate, "");
+    const delivered = () =>
+      new Set(
+        customMessages(harness.session, "async-shell-completion").flatMap(
+          (message) => JSON.stringify(message.content).match(/sh_[0-9a-f]{8}/g) ?? [],
+        ),
+      );
+    assert.equal(await waitFor(() => delivered().size === 3), true, "every record is still delivered");
     const messages = customMessages(harness.session, "async-shell-completion");
     assert.equal(messages.length, 1, "coalescing must produce one delivery, not three");
-    const content = JSON.stringify(messages[0]?.content);
-    const ids = new Set(content.match(/sh_[0-9a-f]{8}/g) ?? []);
-    assert.equal(ids.size, 3, "every record is still delivered");
   } finally {
     harness.dispose();
     if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
