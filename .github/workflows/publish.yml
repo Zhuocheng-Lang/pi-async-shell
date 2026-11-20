@@ -1,0 +1,60 @@
+name: Publish
+
+# Publishes to npm from a tag, and only from a tag: the version in
+# package.json must match the tag, so a push is the release decision.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: dist-tag to publish under
+        required: true
+        default: latest
+
+permissions:
+  contents: read
+  # Lets the runner mint an OIDC token. npm Trusted Publishing exchanges it for
+  # a short-lived publish token, so no long-lived secret is stored here.
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Trusted Publishing needs a GitHub-hosted runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads the pinned version from packageManager in package.json.
+      - uses: pnpm/action-setup@v4
+
+      # 26 carries npm 12 and a Node above the engines floor. The publish itself
+      # is pnpm, but both tools must understand the registry metadata.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Refuse a tag that disagrees with package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "${GITHUB_REF_NAME}" = "v$version" || {
+            echo "tag ${GITHUB_REF_NAME} does not match package.json version $version"
+            exit 1
+          }
+
+      # prepublishOnly runs pnpm verify, so the suite gates the upload itself.
+      # --no-git-checks: a tag checkout is a detached HEAD, which pnpm refuses
+      # by default; --tag is explicit because publishConfig.tag is not honoured
+      # by pnpm and the workflow should not depend on the default.
+      - name: Publish
+        run: pnpm publish --no-git-checks --tag "${{ inputs.tag || 'latest' }}"
