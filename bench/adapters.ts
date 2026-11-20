@@ -183,6 +183,10 @@ export function createAsyncShellImpl(session: BenchSession): Impl {
           command,
           scope: options.scope ?? "session",
           name: options.name ?? "bench task",
+          // The benchmark measures admission, and every scenario awaits the
+          // settle separately. Charging a fast settle to the start call would
+          // count the same wait twice, so the inline window stays off here.
+          inlineSettleMs: 0,
           ...(options.binding ? { binding: options.binding } : {}),
           ...(options.notifyOnCompletion === undefined ? {} : { notifyOnCompletion: options.notifyOnCompletion }),
         },

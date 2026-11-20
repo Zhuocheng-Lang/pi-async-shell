@@ -41,7 +41,7 @@ pi -e /absolute/path/to/pi-async-shell
 对应的工具调用顺序如下：
 
 ```ts
-// 1. 启动立即返回 id，例如 sh_1234abcd。
+// 1. 启动返回句柄；若命令在 1s 内落定，则同一次调用直接返回结果。
 shell_start({
   command: "pnpm run dev -- --port 3000",
   name: "dev server"

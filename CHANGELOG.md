@@ -6,6 +6,7 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 
 ### Added
 
+- `shell_start inlineSettleMs` (default `1000`). A command that settles inside the window returns its status, exit code and output tail in the start call itself, so a fast command costs one tool round trip instead of two and no `shell_await` follows. The settle is then not announced again as a completion message. A command that outlives the window keeps the handle it always returned and still announces its own completion. `0` restores the return-immediately behaviour. A trivial `pipe` command settles in about 50ms and a `pty` one in about 260ms in the end-to-end suite.
 - `shell_start delivery: "steer" | "settle"`. A completion that lands while the agent is running is steered in before the next LLM call; `settle` holds it for the settle boundary.
 - CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md, issue and pull request templates, a CI workflow, and .editorconfig.
 - `typescript`, `@types/node` and the three Pi host packages as pinned devDependencies. `pnpm install` now builds the whole toolchain, so `pnpm typecheck` and `pnpm test` no longer depend on a global `tsc`, a Pi installation or the `NODE_PATH` Pi exports.

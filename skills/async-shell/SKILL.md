@@ -5,7 +5,7 @@ description: Run and supervise durable asynchronous shell work in pi-async-shell
 
 # Async shell workflows
 
-Use shell_start for work that should return a handle immediately. Keep Pi's bash tool for commands that finish in a few seconds and need no log workflow.
+Use shell_start for work that should return a handle immediately. A command that settles within inlineSettleMs (default 1000) returns its status and output tail in that same call, so a fast command needs no separate await and no completion message follows. Keep Pi's bash tool for commands that need neither a log nor a durable handle.
 
 Commands use /bin/bash -c by default, falling back to /bin/sh. Ambient $SHELL is ignored. PI_ASYNC_SHELL is an explicit override.
 

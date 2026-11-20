@@ -264,11 +264,19 @@ This document is normative. It does not carry the **[Fact]** / **[Inference]** /
 
 ### consumedByAwait
 
-**Definition.** The flag that a `shell_await` already returned this handle's terminal state, so no follow-up event is needed.
+**Definition.** The flag that a `shell_await` — including the inline window of a `shell_start` — already returned this handle's terminal state, so no follow-up event is needed.
 
 **Not** a suppression of the record. The record stays durable. Only the wake-up is suppressed, and a later `shell_read` still finds the output.
 
 **Used in** `03-execution-model-and-primitives.md` §4; `04-runtime-architecture.md` §7.
+
+### inlineSettleMs
+
+**Definition.** The bound on how long `shell_start` holds its own result for a settle. Default 1000ms; `0` returns the handle at once.
+
+**Not** a wait condition. It observes exit only; readiness and output patterns remain `shell_await` conditions, and expiry cancels nothing.
+
+**Used in** `03-execution-model-and-primitives.md` §3.1.
 
 ### process identity
 

@@ -59,6 +59,7 @@ Contract-to-evidence map:
 | C1 — states; readiness is a milestone | `pty.test.ts` ("a marker file declares readiness out of band"), `registry.test.ts` ("timeoutSeconds settles as timed-out through the ladder") |
 | C2 — readiness is a wait condition | `registry.test.ts` ("a ready marker works without any shell_start readiness declaration"), `registry.test.ts` ("an await pattern observes only the selected stream", "a pattern wait with since=now cannot re-match an answered prompt", "an await pattern matches a prompt before a newline arrives") |
 | C3 — completion is an event, not a poll | `extension-e2e.test.ts` ("three completions coalesce into one message") |
+| A settle is reported once | `extension-e2e.test.ts` ("a command that settles inside the start call returns its result there", "a command that outlives the inline window keeps the handle and still notifies", "inlineSettleMs: 0 returns at once and leaves the completion channel alone") |
 | C4 — cancellation ladder + verification | `registry.test.ts` ("cancel proves the tree is gone, including a setsid escapee", "the fence reaches a child that cleared its env and lost its parent", "graceful cancel uses SIGTERM before the fence") |
 | C5 — drain, never stop reading | `registry.test.ts` ("the session pipe log cap drains instead of killing or blocking the child", "the workspace pipe log cap drains instead of killing or blocking the child") |
 | C6 — `(boot_id, pid, start)` identity | `workspace.test.ts` ("an unprovable workspace record becomes lost, never completed"), `identity.ts` |
@@ -143,7 +144,11 @@ The registry creates `.pi/async-shell/.gitignore` containing `*` with the no-rep
 
 Evidence: `maintenance.test.ts` — the three GC and gitignore tests.
 
-### 3.13 Timeout and await observe finalized cleanup, not status labels
+### 3.13 A settle is claimed by the call that reports it
+
+`shell_start` holds its own result for `inlineSettleMs` so a command that ends immediately costs one tool round trip instead of two. The ordering is the whole design: `finalize` hands the record to `onSettle` before any waiter can observe the terminal state, so a wait that starts afterwards is always too late to suppress the completion message. The extension therefore claims the id for as long as the start call waits, and releases the claim when the wait ends without a settle. A command that outlives the window keeps its handle and announces its own completion; a command that settles inside it is delivered by the tool result, and a queued record for a settle that raced admission is dropped instead of sent twice. No execution changes state because a start call stopped waiting.
+
+### 3.14 Timeout and await observe finalized cleanup, not status labels
 
 `enforceTimeout` sets the `timed-out` label early, but the record is sealed only after the graceful signal, the grace period, the fence and `verifyGone`. The exit watcher refuses to finalize while the captured identity is still alive, so a supervisor's `exit.json` cannot make a still-running tree look settled. `shell_cancel` waits for the same `finalized` event rather than for a status string. This is what makes "cancel returns after the tree is gone" true rather than aspirational.
 
