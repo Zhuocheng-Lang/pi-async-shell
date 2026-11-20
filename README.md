@@ -159,6 +159,7 @@ pi-interactive-shell is a better fit when a human needs a live TUI overlay and t
 - Runtime state lives under .pi/async-shell/. The extension creates a local .gitignore containing *. Existing .gitignore content is not replaced.
 - Pipe logs default to a 100 MiB cap (PI_ASYNC_SHELL_MAX_LOG_BYTES). At the cap, recording stops but stdout/stderr continue to drain, so output volume cannot block or kill the command.
 - PTY recordings write directly from script(1) to disk and do not use the pipe cap. Use timeoutSeconds and storage monitoring for long-lived, verbose PTY programs.
+- Completions that settle close together travel in one message. The window is 150 ms by default; PI_ASYNC_SHELL_COALESCE_MS widens or narrows it, and 0 sends each settle on its own.
 - GC runs at registry startup and hourly. It removes terminal records after 24 hours by default, or old records beyond the 100-record limit after a five-minute grace period. Running, nonterminal, protected, and current-session records are never collected. Tune with PI_ASYNC_SHELL_GC_RETENTION_MS and PI_ASYNC_SHELL_GC_MAX_RECORDS.
 - Cancellation is not rollback, and the environment filter is not a security sandbox. Commands retain the user's filesystem and network permissions.
 

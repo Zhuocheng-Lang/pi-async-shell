@@ -384,12 +384,14 @@ test("three completions coalesce into one message", { timeout: 120_000 }, async 
   const previousShell = process.env.PI_ASYNC_SHELL;
   process.env.PI_ASYNC_SHELL = "/bin/sh";
   const harness = await createHarness();
-  // All three commands block on one file, so they settle together however slowly
-  // the machine started them. A fixed `sleep` let their settles straddle the
-  // 150ms coalescing window on a contended runner, which is a three-message
-  // delivery, not a regression.
+  // The commands block on one file that the test opens after the turn ends, so
+  // their settles land together. The raised window absorbs the moment a
+  // contended runner needs to notice that file; the width of the window itself
+  // is not what this test asserts.
   const gate = join(mkdtempSync(join(tmpdir(), "pas-gate-")), "open");
   const waitForGate = (label: string) => `while [ ! -f ${gate} ]; do sleep 0.01; done; echo ${label}`;
+  const previousWindow = process.env.PI_ASYNC_SHELL_COALESCE_MS;
+  process.env.PI_ASYNC_SHELL_COALESCE_MS = "2000";
   try {
     harness.faux.setResponses([
       fauxAssistantMessage(
@@ -419,6 +421,8 @@ test("three completions coalesce into one message", { timeout: 120_000 }, async 
     harness.dispose();
     if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
     else process.env.PI_ASYNC_SHELL = previousShell;
+    if (previousWindow === undefined) delete process.env.PI_ASYNC_SHELL_COALESCE_MS;
+    else process.env.PI_ASYNC_SHELL_COALESCE_MS = previousWindow;
   }
 });
 
