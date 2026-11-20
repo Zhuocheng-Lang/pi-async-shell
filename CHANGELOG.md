@@ -2,7 +2,7 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
-## [Unreleased]
+## [0.2.0-beta.3] - 2026-11-20
 
 ### Changed
 
