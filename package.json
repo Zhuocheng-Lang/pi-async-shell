@@ -1,6 +1,6 @@
 {
   "name": "pi-async-shell",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "packageManager": "pnpm@12.21.0",
   "description": "Durable asynchronous shell commands for Pi with bounded waits, searchable logs, PTY input, and workspace recovery.",
   "type": "module",
