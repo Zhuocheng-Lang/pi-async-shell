@@ -1,130 +1,135 @@
 # pi-async-shell
 
-Run slow commands without blocking Pi, keep their logs, and recover workspace jobs after a Pi restart.
-
-pi-async-shell adds seven supervised shell tools. It supports parallel builds, dev servers, searchable output, interactive PTY programs, and promotion from a session to a durable workspace job.
+Durable asynchronous shell commands for Pi. A dev server, slow build, test suite, or interactive CLI returns a handle immediately instead of blocking the turn, writes searchable logs to disk from spawn, accepts PTY keystrokes, and can survive a Pi restart.
 
 [中文说明](README.zh-CN.md)
 
-```
-Status: beta · Linux only for now
-```
+Status: beta · Linux only for now.
 
-## Try it in three minutes
+## Why not just Pi's built-in `bash` or a basic background extension?
 
-Requirements: Linux, Node.js 22.19 or later, and Pi. PTY commands also use script(1), mkfifo(1), and stty(1).
+Pi's built-in `bash` tool blocks until a process exits and cannot drive a long-lived dev server or an interactive prompt. Most background-task extensions spawn detached children, but force the agent into polling loops, dump multi-kilobyte logs into the context window, lose processes across a Pi restart, or hang when a command asks `[y/N]`.
 
-Try the package for one Pi invocation without changing your settings:
+`pi-async-shell` solves those failure modes directly:
 
-```sh
-pi -e npm:pi-async-shell
-```
+- **Wait for readiness without polling.** `shell_await` blocks until process exit, an output regex (e.g., `Listening on :3000`), or a `$PI_ASYNC_SHELL_EXEC_DIR/ready` marker file. One tool call replaces 7–8 sleep-and-poll turns.
+- **Search 200k-line logs without context bloat.** `stdout`, `stderr`, and `combined` streams are file-backed from spawn. `shell_read({ mode: "grep" })` extracts only the matching lines and context instead of pouring megabytes into the model prompt. At the log cap, recording stops while output keeps draining, so a chatty build is never killed for output volume.
+- **Drive interactive CLIs and TUIs.** `binding: "pty"` allocates a real disk-backed terminal. The agent waits for a prompt without a trailing newline, sends text or key chords via `shell_send`, and inspects the rendered terminal screen via `stream: "ptyView"`.
+- **Survive a Pi crash or restart.** `scope: "workspace"` jobs live outside the Pi process and are automatically adopted by a later session with full log history intact. `shell_promote` upgrades a live session job to workspace ownership in place—no restart, no lost output.
+- **Wake the agent on completion.** When an unawaited background command finishes mid-turn, it steers a notification with the exit code and a bounded output excerpt into the agent's next decision. Fast commands that finish within `inlineSettleMs` (default 1000 ms) return their result directly in `shell_start` with no extra `shell_await`.
 
-Install it for daily use:
+## Measured against `bash` and 9 npm background extensions
 
-```sh
-pi install npm:pi-async-shell
-```
+Every row below comes from [`bench/REPORT.md`](bench/REPORT.md) (`node bench/run-bench.ts`), running real Pi SDK sessions against `bash` and the 9 most-downloaded background/shell extensions on npm (`pi-background-tasks`, `pi-better-background-tasks`, `pi-background`, `pi-patty-bg-tasks`, `pi-async`, `@tduyng/pi-shell`, `pi-shell-jobs`, `pi-exec-command`):
 
-The package includes an async-shell skill with server, readiness-marker, test, promotion, and PTY recipes.
+| Scenario | Built-in `bash` | `pi-async-shell` | The other 9 npm extensions |
+|---|---|---|---|
+| **Start a dev server & know it is ready** | Blocks forever | **1 call** (`1.29 s` via output-pattern wait) | 6 extensions need **7–8 polling calls**; 2 wait `5.3 s` / `30.3 s` |
+| **Find the answer in a 2.5 s noisy command** | `11,913 B` into model context | **`679 B` into model context** (via `shell_read` grep) | 6 extensions pour `6.4 KB–17.4 KB` into context; only 1 other has log grep |
+| **Answer a `[y/N]` prompt after 4,000 lines** | Cannot send stdin | **Answered in `346 ms`** (`binding: "pty"` + `shell_send`) | 5 fail (no stdin); 2 take `5.4 s` / `30.3 s`; only 1 pipe tool answers fast |
+| **Recover log output after Pi is killed & restarted** | Lost (`0/40` lines) | **Recovered `40/40` lines** (`scope: "workspace"`) | **All 9 lose everything (`0/40` lines)** |
+| **Cancel a runaway process tree cleanly** | Only on turn abort | **Signal ladder + verified tree cleanup, log kept** | 1 has no cancel tool; 1 loses all output on cancel |
 
-## Hard rules from dogfooding
+See [bench/REPORT.md](bench/REPORT.md) for the full reproduction methodology, per-package numbers, and capability matrix.
 
-- Use shell_start for long, parallel, or log-worthy work. Keep the bash tool for commands that finish in about a second.
-- Do not pipe output to tail, head, grep, or wc. A pipe truncates the durable log before shell_read can search it, and on a shell without pipefail it also replaces the source exit code. Use shell_read modes tail, grep, offset, or all instead.
-- Pass cwd to shell_start instead of prefixing the command with cd.
-- Use one long blocking await per codemode script, leave room in the 60-second budget, and end the turn after a full-length wait. Completion delivery wakes the next decision.
-- Pipelines on bash-like shells run with set -o pipefail; any stage failure fails the command. The /bin/sh fallback reports only the last stage and labels the handle with exitSource: last-command.
-- waitMs above 50000 and inlineSettleMs above 10000 are clamped with a note, not rejected.
+## Install & try in 30 seconds
 
-## Use a ready marker when output is ambiguous
-
-Every command receives PI_ASYNC_SHELL_EXEC_DIR. Create ready inside that directory after a real health check:
+Requirements: Linux, Node.js 22.19 or later, and Pi. PTY commands also use `script(1)`, `mkfifo(1)`, and `stty(1)`.
 
 ```sh
-pnpm run dev &
-server_pid=$!
-until curl -fsS http://localhost:3000/health >/dev/null; do sleep 0.2; done
-touch "$PI_ASYNC_SHELL_EXEC_DIR/ready"
-wait "$server_pid"
+pi -e npm:pi-async-shell         # try in a single session (trying it never hurts XD)
+pi install npm:pi-async-shell    # install for daily use
 ```
 
-Wait for the marker through shell_await:
+The package ships an `async-shell` skill with server, readiness-marker, test, promotion, and PTY recipes.
+
+**Evaluating this extension as an agent or human?** Paste this prompt into a `pi -e npm:pi-async-shell` session to verify readiness waiting, PTY interaction, and log search in one turn:
+
+> Use `shell_start` with `binding: "pty"` to run `python3 -u -c "import time; print('booting...'); time.sleep(0.5); ans = input('Deploy now? [y/N] '); print('RESULT=' + ans)"`. Wait for the `\[y/N\]` prompt with `shell_await` (`until.kind: "pattern"`), answer `y` with `shell_send`, wait for exit, and grep for `RESULT=` with `shell_read`.
+
+## Three high-leverage workflows
+
+### 1. Start a dev server and wait for readiness (zero polling)
 
 ```ts
-shell_await({
-  ids: "sh_1234abcd",
-  until: { kind: "ready" },
-  waitMs: 15000
+const srv = await shell_start({
+  command: "pnpm run dev -- --port 3000",
+  cwd: "/repo",
+  name: "dev server",
+});
+
+// Returns as soon as the port banner appears; timeout never kills the server
+await shell_await({
+  ids: srv.id,
+  until: { kind: "pattern", regex: "Local:.*3000" },
+  waitMs: 15000,
 });
 ```
 
-There is no shell_start.readiness option. Output regular expressions and the ready file are both wait conditions, not spawn options. Patterns can match a prompt before it prints a newline.
+### 2. Drive an interactive prompt or REPL over a real PTY
 
-## Choose ownership and I/O independently
+```ts
+const cli = await shell_start({
+  command: "python3 -q",
+  binding: "pty",
+  name: "python repl",
+});
 
-| Setting | Behavior |
-|---|---|
-| scope: session (default) | Survives the turn and /reload; ends with the owning Pi session. |
-| scope: workspace | Survives a Pi restart and can be adopted by a later process. |
-| binding: pipe (default) | Separate stdout and stderr files plus combined output. No stdin. |
-| binding: pty | A real terminal, key input through shell_send, and rendered-screen reads. |
+await shell_await({
+  ids: cli.id,
+  until: { kind: "pattern", regex: ">>>" },
+});
+await shell_send({ id: cli.id, text: "print(21 * 2)", keys: ["Enter"] });
+const screen = await shell_read({ id: cli.id, stream: "ptyView" });
+```
 
-Use shell_promote({ id, to: "workspace" }) when a session command must outlive Pi. Both pipe and pty sessions promote without a respawn or log transition.
+### 3. Run a noisy test suite, grep failures, and promote to workspace
 
-scope turn is intentionally absent. Ending a turn never cancels a session command.
+```ts
+const job = await shell_start({ command: "pnpm test", cwd: "/repo" });
+
+// Running longer than expected? Promote in place so it survives a Pi restart
+await shell_promote({ id: job.id, to: "workspace" });
+
+await shell_await({ ids: job.id, waitMs: 45000 });
+const failures = await shell_read({
+  id: job.id,
+  mode: "grep",
+  pattern: "FAIL|Error",
+  context: 3,
+});
+```
 
 ## The seven tools
 
 | Tool | Purpose |
 |---|---|
-| shell_start | Start with session/workspace ownership and pipe/pty I/O. |
-| shell_await | Wait for exit, the ready marker, or an output regular expression. |
-| shell_read | Read tail, head, offsets, grep results, or a bounded all view from log slices. |
-| shell_promote | Move live session work to workspace ownership. |
-| shell_send | Send text or key chords to a pty through its durable stdin FIFO. |
-| shell_cancel | Run the signal ladder and verify process-tree cleanup. |
-| shell_status | Inspect current handles; do not use it as a polling loop. |
+| `shell_start` | Start a command with `session` or `workspace` ownership and `pipe` or `pty` I/O. |
+| `shell_await` | Wait for exit, a `$PI_ASYNC_SHELL_EXEC_DIR/ready` marker, or an output regular expression. |
+| `shell_read` | Read `tail`, `head`, `offset`, `grep` hits, or a bounded `all` view from `combined`, `stdout`, `stderr`, or `ptyView`. |
+| `shell_promote` | Upgrade live `session` work to `workspace` ownership without respawning or losing logs. |
+| `shell_send` | Write text or key chords (`Enter`, `Ctrl+C`, arrows, etc.) to a `pty` through its durable stdin FIFO. |
+| `shell_cancel` | Run the graceful-to-force signal ladder and verify that the entire process tree is gone. |
+| `shell_status` | Inspect one handle or all active handles (point-in-time snapshot, not a polling primitive). |
 
-shell_await waitMs defaults to 30000 and is clamped to 50000; an over-limit value is reported in the result note. This leaves room in codemode's 60-second default script budget. After a full-length wait, end the turn and let completion delivery wake you. A timeout or aborted wait never cancels the command. shell_read mode all is a bounded head read (2000 lines / 50 KiB) whose note explains paging with offset.
+## Choose ownership and I/O independently
 
-## How a completion reaches the agent
-
-A command that settles while nothing is awaiting it produces one completion message. When the agent is still running, that message is steered in before the next LLM call, so a build that finished mid-turn informs the next decision instead of arriving after the run is over.
-
-| shell_start setting | Effect |
+| Setting | Behavior |
 |---|---|
-| delivery: steer (default) | The record reaches a running agent before its next LLM call. |
-| delivery: settle | The record waits for the settle boundary, so the current plan finishes first. |
-| notifyOnCompletion: false | No completion message; the record stays on disk. |
-| triggerOnCompletion: false | An idle session stores the record without starting a turn. |
+| `scope: "session"` (default) | Survives across turns and `/reload`; cleaned up when the owning Pi session exits. |
+| `scope: "workspace"` | Survives a Pi process exit or crash and is adopted by the next session in that workspace. |
+| `binding: "pipe"` (default) | Separate `stdout` and `stderr` files plus `combined` output. Refuses stdin. |
+| `binding: "pty"` | Real disk-backed pseudo-terminal, key input via `shell_send`, and rendered viewport reads via `ptyView`. |
 
-Completion messages and await results carry the exit code and a bounded output excerpt: the tail on success, or the first error block plus tail on failure. Records that settle within the same 150 ms window travel as one message. A shell_await that consumed a handle suppresses its completion, and a workspace record never starts a turn by itself.
+## Documentation
 
-## Environment, storage, and limits
-
-- Commands run with /bin/bash -c by default, falling back to /bin/sh. Ambient $SHELL is ignored because a login shell is not necessarily a POSIX script interpreter. Set PI_ASYNC_SHELL to override the command shell explicitly.
-- Ambient variables matching common credential forms, including *_API_KEY, *_API_SECRET, *_SECRET_KEY, *_ACCESS_TOKEN, *_AUTH_TOKEN, *_SESSION_TOKEN, and several common cloud/token names, are filtered before spawn. shell_start.env explicitly overrides the filter. Tool arguments can enter the session transcript, so do not put real credentials there without authorization.
-- Runtime state lives under .pi/async-shell/. The extension creates a local .gitignore containing *. Existing .gitignore content is not replaced.
-- Pipe logs default to a 100 MiB cap (PI_ASYNC_SHELL_MAX_LOG_BYTES). At the cap, recording stops but stdout/stderr continue to drain, so output volume cannot block or kill the command.
-- PTY recordings write directly from script(1) to disk and do not use the pipe cap. Use timeoutSeconds and storage monitoring for long-lived, verbose PTY programs.
-- Completions that settle close together travel in one message. The window is 150 ms by default; PI_ASYNC_SHELL_COALESCE_MS widens or narrows it, and 0 sends each settle on its own.
-- GC runs at registry startup and hourly. It removes terminal records after 24 hours by default, or old records beyond the 100-record limit after a five-minute grace period. Running, nonterminal, protected, and current-session records are never collected. Tune with PI_ASYNC_SHELL_GC_RETENTION_MS and PI_ASYNC_SHELL_GC_MAX_RECORDS.
-- Cancellation is not rollback, and the environment filter is not a security sandbox. Commands retain the user's filesystem and network permissions.
-
-## Development and evidence
-
-```sh
-pnpm install          # TypeScript, Node types and the pinned Pi host packages
-pnpm verify           # typecheck plus the full test suite
-pnpm pack --dry-run   # the files the published tarball would contain
-```
-
-Nothing has to be installed globally: the type checker and the Pi host packages are devDependencies, pinned to the versions the suite is verified against. The benchmark needs two more steps first; see [bench/README.md](bench/README.md).
-
-The test suite uses real processes and a real Pi SDK session with a faux provider. It covers default shell selection, credential filtering, readiness, partial-line prompts, log caps, GC safety, cancellation, hard-kill durability, promotion, workspace adoption, reload handoff, and tool schemas.
-
-[bench/REPORT.md](bench/REPORT.md) contains the generated comparison against Pi's bash tool and nine background/task extensions. [docs/implementation-notes.md](docs/implementation-notes.md) explains the runtime. The design series in [docs/design/](docs/design/) records terminology, trade-offs, and ecosystem context.
+| File | Content |
+|---|---|
+| [skills/async-shell/SKILL.md](skills/async-shell/SKILL.md) | Agent recipes: hard rules, readiness markers, PTY sessions, ownership, wait budgets. |
+| [bench/REPORT.md](bench/REPORT.md) | Reproducible benchmark against Pi's `bash` tool and nine npm background/task extensions. |
+| [docs/implementation-notes.md](docs/implementation-notes.md) | Runtime architecture, on-disk storage, log cap, garbage collection, known limits. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, `pnpm verify`, running benchmarks, release steps. |
+| [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | Release history and vulnerability reporting. |
 
 ## License
 
