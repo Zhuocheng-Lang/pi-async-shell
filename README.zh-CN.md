@@ -4,8 +4,10 @@
 
 pi-async-shell 提供七个受监管的 Shell 工具，覆盖并行构建、开发服务器、日志检索、交互式 PTY 程序，以及从 session 到持久 workspace 任务的无损提升。
 
+[English](README.md)
+
 ```
-当前版本：0.2.0-beta.1 · 仅支持 Linux · [English](README.md)
+当前状态：beta · 目前仅支持 Linux
 ```
 
 ## 三分钟上手
@@ -15,54 +17,13 @@ pi-async-shell 提供七个受监管的 Shell 工具，覆盖并行构建、开�
 只在本轮 Pi 调用中试用，不修改配置：
 
 ```sh
-pi -e npm:pi-async-shell@0.2.0-beta.1
+pi -e npm:pi-async-shell
 ```
 
 安装到日常环境：
 
 ```sh
-pi install npm:pi-async-shell@0.2.0-beta.1
-```
-
-试用本地检出：
-
-```sh
-pi -e /absolute/path/to/pi-async-shell
-```
-
-然后直接告诉 Pi：
-
-```text
-用 pi-async-shell 在 3000 端口启动开发服务器。
-等到它打印本地地址后运行测试。
-只显示测试失败及前后几行上下文。
-```
-
-对应的工具调用顺序如下：
-
-```ts
-// 1. 启动返回句柄；若命令在 1s 内落定，则同一次调用直接返回结果。
-shell_start({
-  command: "pnpm run dev -- --port 3000",
-  name: "dev server"
-});
-
-// 2. 等待服务器输出就绪，而不是等待服务器退出。
-shell_await({
-  ids: "sh_1234abcd",
-  until: { kind: "pattern", regex: "Local:.*3000" },
-  waitMs: 15000
-});
-
-// 3. 在这个因果屏障之后运行依赖任务。
-shell_start({ command: "pnpm test", name: "test suite" });
-shell_await({ ids: "sh_test_id", waitMs: 50000 });
-shell_read({
-  id: "sh_test_id",
-  mode: "grep",
-  pattern: "FAIL|Error|error",
-  context: 3
-});
+pi install npm:pi-async-shell
 ```
 
 包内附带 async-shell Skill，包含服务器、就绪标记、测试、提升和 PTY 工作流。
@@ -140,27 +101,6 @@ shell_await 的 waitMs 默认 30000，超过 50000 会被钳制并在结果中�
 
 完成消息和 await 结果会给出退出码及有界的输出摘录：成功时显示 tail，失败时显示首个错误块和 tail。同一 150 ms 窗口内结束的记录合并为一条消息。被 shell_await 消费的句柄不再产生完成消息，workspace 记录也不会自行开启轮次。
 
-## 与 pi-background-tasks 共存
-
-pi-background-tasks 还提供委派 Agent 和 Fusion 工作流。保留这些工具，只在 ~/.pi/agent/settings.json 屏蔽与本包重叠的 Shell 任务入口：
-
-```json
-{
-  "defaultTools": [
-    "+codemode",
-    "+tool_search",
-    "-bg_run",
-    "-bg_status",
-    "-bg_logs",
-    "-bg_kill"
-  ]
-}
-```
-
-把这些条目合并进现有 defaultTools 数组。bg_delegate、bg_run_pi_attested 和 fusion_* 仍然可用。本包不会替换 background-task 扩展，因此其命令和内部状态不受影响。
-
-如果需要人类实时观看并接管 TUI，pi-interactive-shell 更合适。pi-processes 提供 macOS/Linux 上 Codex 风格的托管执行。pi-async-shell 聚焦 Linux 持久性、文件日志、就绪等待与 workspace 恢复。
-
 ## 环境、存储与边界
 
 - 命令默认通过 /bin/bash -c 执行，回退 /bin/sh。登录 Shell 不一定是 POSIX 脚本解释器，因此忽略环境里的 $SHELL。只有显式设置 PI_ASYNC_SHELL 才覆盖命令 Shell。
@@ -188,8 +128,4 @@ pnpm pack --dry-run   # 列出发布 tarball 会包含的文件
 
 ## 许可证
 
-MPL-2.0，完整文本见 [LICENSE](LICENSE)。
-
-Mozilla Public License 2.0 是文件级 copyleft：可以在闭源或专有产品中使用、也可以原样分发 pi-async-shell，只需保留许可证声明。如果修改了某个文件并对外分发，该文件的源码需以 MPL-2.0 提供。许可证包含贡献者的明示专利授权。
-
-版权所有 (c) 2026 Zhuocheng-Lang。源文件带有 `SPDX-License-Identifier: MPL-2.0` 头。贡献按同一许可证接受，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+[MPL-2.0](LICENSE)

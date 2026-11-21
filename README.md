@@ -4,8 +4,10 @@ Run slow commands without blocking Pi, keep their logs, and recover workspace jo
 
 pi-async-shell adds seven supervised shell tools. It supports parallel builds, dev servers, searchable output, interactive PTY programs, and promotion from a session to a durable workspace job.
 
+[中文说明](README.zh-CN.md)
+
 ```
-Status: 0.2.0-beta.1 · Linux only · [中文说明](README.zh-CN.md)
+Status: beta · Linux only for now
 ```
 
 ## Try it in three minutes
@@ -15,54 +17,13 @@ Requirements: Linux, Node.js 22.19 or later, and Pi. PTY commands also use scrip
 Try the package for one Pi invocation without changing your settings:
 
 ```sh
-pi -e npm:pi-async-shell@0.2.0-beta.1
+pi -e npm:pi-async-shell
 ```
 
 Install it for daily use:
 
 ```sh
-pi install npm:pi-async-shell@0.2.0-beta.1
-```
-
-For a local checkout:
-
-```sh
-pi -e /absolute/path/to/pi-async-shell
-```
-
-Then ask Pi:
-
-```text
-Start the dev server on port 3000 with pi-async-shell.
-Wait until it reports its local URL, then run the test suite.
-Show only test failures with surrounding context.
-```
-
-The corresponding tool sequence is:
-
-```ts
-// 1. Start returns a handle, or the result itself if the command settles within 1s.
-shell_start({
-  command: "pnpm run dev -- --port 3000",
-  name: "dev server"
-});
-
-// 2. Wait for output, not for the server to exit.
-shell_await({
-  ids: "sh_1234abcd",
-  until: { kind: "pattern", regex: "Local:.*3000" },
-  waitMs: 15000
-});
-
-// 3. Run dependent work after that causal barrier.
-shell_start({ command: "pnpm test", name: "test suite" });
-shell_await({ ids: "sh_test_id", waitMs: 50000 });
-shell_read({
-  id: "sh_test_id",
-  mode: "grep",
-  pattern: "FAIL|Error|error",
-  context: 3
-});
+pi install npm:pi-async-shell
 ```
 
 The package includes an async-shell skill with server, readiness-marker, test, promotion, and PTY recipes.
@@ -140,27 +101,6 @@ A command that settles while nothing is awaiting it produces one completion mess
 
 Completion messages and await results carry the exit code and a bounded output excerpt: the tail on success, or the first error block plus tail on failure. Records that settle within the same 150 ms window travel as one message. A shell_await that consumed a handle suppresses its completion, and a workspace record never starts a turn by itself.
 
-## Coexist with pi-background-tasks
-
-pi-background-tasks also provides delegated agents and Fusion workflows. Keep those tools and disable only its overlapping shell-task surface in ~/.pi/agent/settings.json:
-
-```json
-{
-  "defaultTools": [
-    "+codemode",
-    "+tool_search",
-    "-bg_run",
-    "-bg_status",
-    "-bg_logs",
-    "-bg_kill"
-  ]
-}
-```
-
-Merge these entries with your existing defaultTools array. bg_delegate, bg_run_pi_attested, and fusion_* remain available. The package does not replace the background-task extension, so its commands and internal state stay intact.
-
-pi-interactive-shell is a better fit when a human needs a live TUI overlay and takeover. pi-processes provides Codex-inspired managed execution on macOS and Linux. pi-async-shell focuses on Linux durability, file-backed logs, readiness waits, and workspace recovery.
-
 ## Environment, storage, and limits
 
 - Commands run with /bin/bash -c by default, falling back to /bin/sh. Ambient $SHELL is ignored because a login shell is not necessarily a POSIX script interpreter. Set PI_ASYNC_SHELL to override the command shell explicitly.
@@ -188,8 +128,4 @@ The test suite uses real processes and a real Pi SDK session with a faux provide
 
 ## License
 
-MPL-2.0. The full text is in [LICENSE](LICENSE).
-
-The Mozilla Public License 2.0 is file-level copyleft. You can use pi-async-shell inside a proprietary or closed-source product, and you can redistribute it unchanged, as long as the license notices stay in place. If you modify a file and distribute the result, that file's source must be available under MPL-2.0. The license carries an express patent grant from contributors.
-
-Copyright (c) 2026 Zhuocheng-Lang. Source files carry `SPDX-License-Identifier: MPL-2.0` headers. Contributions are accepted under the same license; see [CONTRIBUTING.md](CONTRIBUTING.md).
+[MPL-2.0](LICENSE)
