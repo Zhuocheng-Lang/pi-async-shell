@@ -48,9 +48,10 @@ These are bench-environment repairs, not favours to any implementation:
 
 ## Limits
 
-- `pi-background-tasks` is the globally installed copy at
-  `~/.pi/agent/npm/node_modules/pi-background-tasks`, not a vendored one. Its
-  version is recorded in the report.
+- `pi-background-tasks` is the globally installed copy under
+  `~/.pi/agent/npm/node_modules`, not a vendored one. Its version is recorded in
+  the report. Set `PI_GLOBAL_NODE_MODULES` when Pi's global store lives
+  elsewhere.
 - `pi-shell-jobs` needs `@homebridge/node-pty-prebuilt-multiarch` for `tty: true`.
   It is in the vendor manifest for that reason. Its install script is denied in
   `bench/vendors/pnpm-workspace.yaml`, so the native binding is absent and the

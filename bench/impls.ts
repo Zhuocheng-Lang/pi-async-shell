@@ -14,15 +14,20 @@ import {
   createShellJobsImpl,
   type Impl,
 } from "./adapters.ts";
-import type { BenchSession } from "./harness.ts";
+import { PI_GLOBAL_NODE_MODULES, type BenchSession } from "./harness.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(here, "..");
 export const VENDORS = join(here, "vendors", "node_modules");
 
 /** The globally installed pi-background-tasks, which is the incumbent. */
-const GLOBAL_BACKGROUND_TASKS =
-  "~/.pi/agent/npm/node_modules/pi-background-tasks/dist/extensions/background-tasks.js";
+const GLOBAL_BACKGROUND_TASKS = join(
+  PI_GLOBAL_NODE_MODULES,
+  "pi-background-tasks",
+  "dist",
+  "extensions",
+  "background-tasks.js",
+);
 
 export interface ImplSpec {
   key: string;
@@ -134,7 +139,7 @@ export const IMPLS: ImplSpec[] = [
 function globalVersion(name: string): string {
   try {
     const pkg = JSON.parse(
-      readFileSync(join("~/.pi/agent/npm/node_modules", name, "package.json"), "utf8"),
+      readFileSync(join(PI_GLOBAL_NODE_MODULES, name, "package.json"), "utf8"),
     ) as { version: string };
     return pkg.version;
   } catch {

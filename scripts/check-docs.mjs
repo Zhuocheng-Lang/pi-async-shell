@@ -104,6 +104,16 @@ const TEST_DECLARATION = /^test\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\
 const read = (path) => readFileSync(path, "utf8");
 
 /**
+ * A host path is evidence about the machine the survey ran on, not a file this
+ * repository ships. Absolute and home-relative citations are therefore skipped
+ * rather than resolved, and the survey can date its sources without publishing
+ * an account name.
+ *
+ * @param {string} name
+ */
+const isHostPath = (name) => name.startsWith("/") || name.startsWith("~/");
+
+/**
  * Resolve a cited filename to an absolute path, or undefined when it names
  * something outside this repository. A citation is a bare filename as often as
  * it is a path from the repository root, so every documentation root is tried
@@ -114,7 +124,7 @@ const read = (path) => readFileSync(path, "utf8");
  * @returns {string | undefined}
  */
 function resolveCitation(doc, name) {
-  if (name.startsWith("/") || EXTERNAL_DOCS.has(name) || RENAMED_DOCS.has(name)) return undefined;
+  if (isHostPath(name) || EXTERNAL_DOCS.has(name) || RENAMED_DOCS.has(name)) return undefined;
   for (const root of [dirname(doc.path), ROOT, join(ROOT, "docs"), DESIGN]) {
     const candidate = join(root, name);
     if (existsSync(candidate)) return candidate;
@@ -456,7 +466,7 @@ for (const doc of docs) {
 
     for (const match of line.matchAll(DOC_CITATION)) {
       const name = match[1];
-      if (name.startsWith("/") || EXTERNAL_DOCS.has(name) || RENAMED_DOCS.has(name)) continue;
+      if (isHostPath(name) || EXTERNAL_DOCS.has(name) || RENAMED_DOCS.has(name)) continue;
       // A template writes its citation with a placeholder: <file>.md, NNNN.md.
       if (/[<>]/.test(name)) continue;
       if (!resolveCitation(doc, name)) {

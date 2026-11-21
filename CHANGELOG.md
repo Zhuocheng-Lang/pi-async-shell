@@ -24,6 +24,10 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 - Bash-like shells launch pipeline commands with `set -o pipefail`, so a failing stage no longer hides behind a successful `tail`.
 - An aborted inline-settle call no longer consumes the completion; the notification channel still reports the execution.
 
+### Security
+
+- The design survey cites `~` rather than an absolute home path, and the benchmark resolves Pi's global package store from the home directory, with `PI_GLOBAL_NODE_MODULES` as the override. Both had published a local account name, in the docs and in the history that carried them, and that history is rewritten.
+
 ## [0.2.0-beta.3] - 2026-11-20
 
 ### Changed
