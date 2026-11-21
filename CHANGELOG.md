@@ -9,6 +9,10 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 - `shell_read` accepts `mode: "all"` as a bounded head read (2000 lines / 50 KiB) with paging guidance in the note.
 - Pipeline commands record `exitSource`: `pipefail` on bash-like shells, `last-command` on the POSIX fallback. Completion messages and await results include exit codes and bounded output excerpts.
 
+### Changed
+
+- `CONTRIBUTING.md` requires [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). The commits before it were reworded to match, which changes their hashes without changing a single tree.
+
 ### Fixed
 
 - `shell_await.waitMs` and `shell_start.inlineSettleMs` accept values above their practical caps and clamp them in the handler with a visible note instead of failing schema validation.
