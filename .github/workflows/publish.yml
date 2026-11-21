@@ -55,6 +55,38 @@ jobs:
             exit 1
           }
 
+      # A tag is not pushed once. Rewriting the history moves the objects a tag
+      # points at, and GitHub reports the moved tag as a fresh push, so this job
+      # runs again for a version the registry already holds. The registry
+      # answers a second upload of one version with a 403, which reads as a
+      # broken pipeline for a release that already shipped. The version decides
+      # instead: a version on the registry is a no-op, and a missing one is
+      # the upload.
+      #
+      # The registry is read over HTTPS rather than through npm, so the answer
+      # does not depend on which credential the runner happens to hold.
+      - name: Look the version up in the registry
+        id: registry
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            "https://registry.npmjs.org/$name/$version")
+          case "$code" in
+            200)
+              echo "$name@$version is already published"
+              echo "published=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "$name@$version is not on the registry yet"
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "the registry answered HTTP $code for $name@$version"
+              exit 1
+              ;;
+          esac
+
       # prepublishOnly runs pnpm verify, so the suite gates the upload itself.
       # --no-git-checks: a tag checkout is a detached HEAD, which pnpm refuses
       # by default; --tag is explicit because publishConfig.tag is not honoured
@@ -65,6 +97,7 @@ jobs:
       # Without it, the NPM_TOKEN secret is the fallback, so the pipeline works
       # before that web configuration exists.
       - name: Publish
+        if: steps.registry.outputs.published == 'false'
         run: pnpm publish --no-git-checks --tag "${{ inputs.tag || 'latest' }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -23,6 +23,7 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 - `shell_await.waitMs` and `shell_start.inlineSettleMs` accept values above their practical caps and clamp them in the handler with a visible note instead of failing schema validation.
 - Bash-like shells launch pipeline commands with `set -o pipefail`, so a failing stage no longer hides behind a successful `tail`.
 - An aborted inline-settle call no longer consumes the completion; the notification channel still reports the execution.
+- The publish workflow treats a version the registry already has as done. Rewriting the history moved `v0.2.0-beta.3` to the reworded commit without changing a tree, GitHub reported the re-push as a new tag event, and npm answered the second upload of that version with a 403, so the release run went red for a release that had already shipped. The job now reads the version from the registry over HTTPS, which no credential can hide, and uploads only when the version is absent.
 
 ### Security
 
