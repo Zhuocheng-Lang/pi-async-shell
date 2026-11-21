@@ -1,14 +1,23 @@
+---
+kind: normative
+applies_to: 0.2.0-beta.3
+tracks:
+  - src/core/spawn.ts
+  - src/core/pipe-supervisor.mjs
+  - src/core/registry.ts
+---
+
 # 04. Runtime Architecture
 
-> This file was named `03-carrier-and-runtime-architecture.md`. It is now `04-runtime-architecture.md`, because `carrier` is no longer a concept in this design (see `00-terminology.md` §10). `05-durability-and-containment.md` §8 records the rename, so old links are accounted for.
+> This file was named `03-carrier-and-runtime-architecture.md`. It is now `04-runtime-architecture.md`. `carrier` is no longer a concept in this design (see `00-terminology.md` §10). `05-durability-and-containment.md` §8 records the rename, so old links are accounted for.
 
 ## 1. Overview
 
-Two bindings, two spawn recipes, one registry. A binding plus a scope is what the word "carrier" used to mean. Keeping the two apart is what allows `workspace` + `pipe` and `workspace` + `pty` to exist at all.
+Two bindings, two spawn recipes, one registry. A binding plus a scope is what the word `carrier` used to mean. Keeping the two apart is what allows `workspace` + `pipe` and `workspace` + `pty` to exist at all.
 
-Every execution's output is file-backed from the moment it starts. A `pipe` execution runs under a detached pipe supervisor that owns the child's stdout and stderr pipes and writes the log files. A `pty` execution runs under a detached wrapper that owns the PTY through `script(1)` and writes the recording to the same directory. Pi holds no data-path descriptor for either binding. The only scope-dependent part is an fd 3 owner watch, and promotion releases it.
+Every execution's output is file-backed from the moment it starts. A `pipe` execution runs under a detached pipe supervisor. The supervisor owns the child's stdout and stderr pipes and writes the log files. A `pty` execution runs under a detached wrapper. The wrapper owns the PTY through `script(1)` and writes the recording to the same directory. Pi stays outside the data path for both bindings. The only scope-dependent part is an fd 3 owner watch. Promotion releases that watch.
 
-The registry, the spawn recipes, containment, cancellation and log management form the core, and the core knows nothing about Pi's messaging. A settle produces an event. The extension layer decides whether to deliver it as a follow-up message, as a TUI notification, or not at all. That separation buys testability, not host portability. `pi-coding-agent` is the only target, and `05-durability-and-containment.md` explains what was read from elsewhere and what was left there.
+The registry, the spawn recipes, containment, cancellation and log management form the core. The core knows nothing about Pi's messaging. A settle produces an event. The extension layer decides whether to deliver it as a follow-up message, as a TUI notification, or not at all. That separation buys testability, not host portability. `pi-coding-agent` is the only target. `05-durability-and-containment.md` explains what was read from elsewhere and what was left there.
 
 ```
 registry (handles, scopes, waiters, completion log)
@@ -47,7 +56,7 @@ spawn(process.execPath, [
 })
 ```
 
-The supervisor writes `pid.json` with its own pid, pgid and start time before it spawns the command, then:
+Before the supervisor spawns the command, it writes `pid.json` with its own pid, pgid and start time. It then spawns the command:
 
 ```js
 const child = spawn(shell, ["-c", command], { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -55,13 +64,13 @@ child.stdout.on("data", (chunk) => append(chunk, stdout));
 child.stderr.on("data", (chunk) => append(chunk, stderr));
 ```
 
-`append` writes to `stdout.log` or `stderr.log` and to `combined.log` in arrival order, up to the cap. Past the cap it keeps consuming the pipes and discards the surplus, and it writes `log-cap.json` once. When the child closes, the supervisor seals `exit.json` (`exitCode`, `signal`, `endedAt`) and kills itself so no supervisor outlives its sealed outcome.
+`append` writes to `stdout.log` or `stderr.log` and to `combined.log` in arrival order, up to the cap. Past the cap it keeps consuming the pipes and discards the surplus. It writes `log-cap.json` once. When the child closes, the supervisor seals `exit.json` (`exitCode`, `signal`, `endedAt`) and kills itself. No supervisor outlives its sealed outcome.
 
-The fd 3 watch is the only difference between the scopes. A `session` execution gets a pipe from Pi; the supervisor reads one line. `release` means ownership moved to the workspace, so the supervisor stops watching and keeps running. EOF means the owning Pi process died, so the supervisor sends `SIGTERM` to its own process group and `SIGKILL` one second later. The supervisor ignores `SIGTERM`, because a group signal also reaches it; it seals `exit.json` and then kills itself.
+The fd 3 watch is the only difference between the scopes. A `session` execution gets a pipe from Pi. The supervisor reads one line from it. `release` means ownership moved to the workspace, so the supervisor stops watching and keeps running. EOF means the owning Pi process died, so the supervisor sends `SIGTERM` to its own process group and `SIGKILL` one second later. The supervisor ignores `SIGTERM`, because a group signal also reaches it. It seals `exit.json` and then kills itself.
 
 ### 2.2 `pty`
 
-One recipe for both scopes. The wrapper is spawned detached, holds no descriptor of Pi's, and owns the PTY through `script(1)`:
+One recipe for both scopes. The wrapper is spawned detached and holds no descriptor of Pi's. It owns the PTY through `script(1)`:
 
 ```sh
 #!/bin/sh
@@ -94,28 +103,28 @@ stty rows 24 cols 80 2>/dev/null     # the size recorded at spawn time
 exec "$shell" -c "$command"
 ```
 
-Four details are load-bearing, and each one was verified against the kernel rather than assumed:
+Four details are load-bearing. Each one was verified against the kernel rather than assumed:
 
-- **The recording goes to a file.** `script` writes its own stdout, so no descriptor of Pi's is in the data path and nothing breaks when Pi dies.
-- **stdin is a FIFO held open read-write.** A read-write handle means the child's stdin never sees EOF when no writer is attached, and a later process can open the same FIFO for writing. `shell_send` opens it `O_WRONLY|O_NONBLOCK`, so a write with no reader fails fast instead of blocking the caller.
-- **The size is set explicitly.** stdin is a FIFO, so the kernel hands the slave no window size and `stty size` would answer `0 0`. The runtime records the size in `pty-size` and the launcher applies it, so the child and the replay agree. The size comes from Pi's terminal when stdout is a TTY, otherwise from `COLUMNS`/`LINES`, clamped to 20-500 columns and 4-200 rows, with 80x24 as the default.
-- **`script` is pinned to a POSIX shell and its job keeps default signal dispositions.** `script` runs its command through `$SHELL -c`, so `SHELL=/bin/sh` keeps a non-POSIX user shell out of the command's parser, exit code and log. Backgrounding a job makes the shell ignore SIGINT and SIGQUIT in it, which would silently disable ^C through the PTY, so the dispositions are reset before `exec`.
+- **The recording goes to a file.** `script` writes its own stdout. The data path therefore carries no descriptor of Pi's, and Pi's death breaks nothing.
+- **stdin is a FIFO held open read-write.** A read-write handle keeps the child's stdin free of EOF. That holds with no writer attached. A later process can also open the same FIFO for writing. `shell_send` opens it `O_WRONLY|O_NONBLOCK`, so a write with no reader fails fast instead of blocking the caller.
+- **The size is set explicitly.** stdin is a FIFO, so the kernel hands the slave no window size. `stty size` would answer `0 0`. The runtime records the size in `pty-size`, and the launcher applies it, so the child and the replay agree. When stdout is a TTY, the size comes from Pi's terminal. Otherwise the size comes from `COLUMNS`/`LINES`, clamped to 20-500 columns and 4-200 rows. The default is 80x24.
+- **`script` is pinned to a POSIX shell and its job keeps default signal dispositions.** `script` runs its command through `$SHELL -c`. `SHELL=/bin/sh` then keeps a non-POSIX user shell out of the command's parser, exit code and log. Backgrounding a job makes the shell ignore SIGINT and SIGQUIT in it. That would silently disable ^C through the PTY, so the runtime resets the dispositions before `exec`.
 
-A PTY merges stdout and stderr into one recording, so `combined.log` is the terminal recording (CRLF, echoed input), `stdout.log` and `ptyView.log` are symlinks to it, and `shell_read` normalizes CRLF by default. `ptyView` replays that recording into the screen it produced; it is not a substitute for the byte stream.
+A PTY merges stdout and stderr into one recording. `combined.log` is that terminal recording (CRLF, echoed input). `stdout.log` and `ptyView.log` are symlinks to it. `shell_read` normalizes CRLF by default. `ptyView` replays that recording into the screen it produced. The replay is a view of the byte stream, not a replacement.
 
-Completion is detected by the atomic appearance of `exit.json`, written by the wrapper after `script` returns. The wrapper is the process Pi spawned, so its pid and process group are the ones the cancellation ladder owns.
+The runtime detects completion from the atomic appearance of `exit.json`, which the wrapper writes after `script` returns. The wrapper is the process Pi spawned, so the cancellation ladder owns its pid and process group.
 
-The owner pipe (fd 3) is the only scope-dependent part. A `session` execution gets one, and its EOF tears the PTY down, so the execution cannot outlive Pi. A `workspace` execution gets none, so it survives and is re-adopted.
+The owner pipe (fd 3) is the only scope-dependent part. A `session` execution gets one, so its EOF tears the PTY down. The execution cannot outlive Pi. A `workspace` execution gets no owner pipe, so it survives and is re-adopted.
 
 ### 2.3 Promotion
 
 `shell_promote({ to: "workspace" })` changes ownership without touching the process:
 
-1. The registry writes `release\n` into the fd 3 owner watch and closes it. The supervisor or wrapper stops watching; it does not signal the command.
-2. It creates a directory symlink `workspace/<id>` pointing at the execution directory under `sessions/`, so the workspace adoption scan sees the record without moving a directory the child is still writing into.
-3. It sets `scope: "workspace"` and `durable: true` in `meta.json`, and applies `adopterNotification` to `notifyOnCompletion` when the caller supplied it.
+1. The registry writes `release\n` into the fd 3 owner watch and closes it. The supervisor or wrapper stops watching. The command receives no signal.
+2. It creates a directory symlink `workspace/<id>`. The symlink points at the execution directory under `sessions/`. The workspace adoption scan then sees the record without moving a directory the child still writes into.
+3. When the caller supplies `adopterNotification`, the registry sets `notifyOnCompletion` from it. The registry also sets `scope: "workspace"` and `durable: true` in `meta.json`.
 
-Nothing is respawned, no log file changes, and no byte is lost. This is why both bindings promote: from the moment of spawn, the process's stdio already belongs to a detached holder rather than to Pi.
+Nothing is respawned. No log file changes. No byte is lost. This is why both bindings promote. From the moment of spawn, the process's stdio already belongs to a detached holder rather than to Pi.
 
 ---
 
@@ -137,16 +146,16 @@ verify:    empty set
            failure -> status failed + descendant-leak diagnostic
 ```
 
-Signalling a group is a delivery mechanism, not a containment guarantee. `setsid(2)` puts a child in a new session and a new group, after which `-pgid` reaches nothing. `nohup … &` is an ordinary thing for an agent to type. The group is the cheap graceful path, and it is the only path available where `environ` is unreadable. The tag is the guarantee.
+Signalling a group is a delivery mechanism, not a containment guarantee. `setsid(2)` puts a child in a new session and a new group. After that, `-pgid` reaches nothing. `nohup … &` is an ordinary thing for an agent to type. The group is the cheap graceful path, and it is the only path available where `environ` is unreadable. The tag is the guarantee.
 
-The three views cover three different escapes. The tag survives a reparented child but not `env -i`. The ppid tree survives `env -i` but not reparenting. The owned process group survives both, and only `setsid(2)` defeats it. The `since` bound is the leader's start time, so a reused group id cannot match a stranger that predates the execution. `05-durability-and-containment.md` §5 gives the provenance and the required test.
+The three views cover three different escapes. The tag survives a reparented child but not `env -i`. The ppid tree survives `env -i` but not reparenting. The owned process group survives both, and only `setsid(2)` defeats it. The `since` bound is the leader's start time. A reused group id therefore cannot match a stranger that predates the execution. `05-durability-and-containment.md` §5 gives the provenance and the required test.
 
 Four more rules are essential:
 
-- The group id and the `(pid, start)` identity are captured at spawn, and the runtime never reconstructs them from metadata for a live process. `start` is re-read immediately before each signal, so a reused pid is never killed.
+- The runtime captures the group id and the `(pid, start)` identity at spawn. It reconstructs neither from metadata for a live process. `start` is re-read immediately before each signal, so a reused pid is never killed.
 - `signalGroup` refuses a pgid of 0 or 1, Pi's own pid, and Pi's own process group. A mistaken group id cannot signal the agent.
-- Aborting a `shell_await` (Escape, or a codemode script abandoning the promise) detaches the waiter only. It does not enter this ladder. Cancelling a consumer is not cancelling a producer.
-- Timeout and cancellation wait for *finalized cleanup*, not for a status label. `enforceTimeout` marks the handle `timed-out`, runs the ladder, verifies absence, and only then seals the record. `shell_cancel` waits for the same finalization. The exit watcher also refuses to finalize while the captured identity is still alive, so a supervisor's `exit.json` cannot make a still-running tree look settled.
+- Aborting a `shell_await` (Escape, or a codemode script abandoning the promise) detaches the waiter only. This ladder stays untouched. Cancelling a consumer is not cancelling a producer.
+- Timeout and cancellation wait for *finalized cleanup*, not for a status label. `enforceTimeout` marks the handle `timed-out`, runs the ladder, verifies absence, and only then seals the record. `shell_cancel` waits for the same finalization. While the captured identity is still alive, the exit watcher refuses to finalize. A supervisor's `exit.json` therefore cannot make a still-running tree look settled.
 
 ---
 
@@ -171,22 +180,22 @@ Layout under `.pi/async-shell/{sessions/<sessionId>-<pid>|workspace}/<id>/`:
 
 The cap is a *logging* policy, so it must not become a *process* policy. When `PI_ASYNC_SHELL_MAX_LOG_BYTES` (default 100 MiB) is reached:
 
-1. the supervisor stops appending beyond the cap;
-2. it **keeps draining the pipes**, discarding the surplus;
-3. `log-cap.json` is written and `bytes.capReached` is set in metadata;
-4. the process is untouched.
+1. The supervisor stops appending beyond the cap.
+2. It **keeps draining the pipes**, discarding the surplus.
+3. The supervisor writes `log-cap.json` and sets `bytes.capReached` in metadata.
+4. The process is untouched.
 
-Step 2 is the step that is easy to get wrong. Linux pipes hold 64 KiB by default. A cap implemented as "stop reading" turns a full pipe into a blocked child, and it turns a logging decision into a hang. This is the single largest behavioural difference from `pi-background-tasks`, whose 20 MiB cap kills the task (`registry.ts:72`, `background-task-runtime.md`).
+Step 2 is the step that is easy to get wrong. Linux pipes hold 64 KiB by default. A cap implemented as "stop reading" turns a full pipe into a blocked child. It also turns a logging decision into a hang. This is the single largest behavioural difference from `pi-background-tasks`, whose 20 MiB cap kills the task (`registry.ts:72`, `background-task-runtime.md`).
 
-The cap covers every `pipe` execution, because the supervisor owns the pipes at both scopes. A `pty` recording is written by `script(1)` directly to disk: there is no pipe to pause and no writer to stop, so the file grows until an operator or the filesystem stops it.
+The cap covers every `pipe` execution, because the supervisor owns the pipes at both scopes. A `pty` recording is written by `script(1)` directly to disk. There is no pipe to pause and no writer to stop, so the file grows until an operator or the filesystem stops it.
 
-Line and byte indexing uses sparse checkpoints every 256 lines, so `mode: "offset"` can `pread` instead of scanning. A read checks `signal.aborted` *before* it opens the file. Passing a pre-aborted signal to `createReadStream` raises an unhandled `error` event, and that is the bug that `~/.pi/agent/extensions/read-abort-guard.ts` exists to patch.
+Line and byte indexing uses sparse checkpoints every 256 lines. `mode: "offset"` can therefore `pread` instead of scanning. A read checks `signal.aborted` *before* it opens the file. Passing a pre-aborted signal to `createReadStream` raises an unhandled `error` event. That is the bug that `~/.pi/agent/extensions/read-abort-guard.ts` exists to patch.
 
 ---
 
 ## 5. Readiness and Wait Conditions
 
-There is no readiness declaration on `shell_start`. Readiness is observed, not configured:
+`shell_start` takes no readiness option. Readiness is observed, not configured:
 
 | Condition | Mechanism | Analogue |
 |---|---|---|
@@ -194,11 +203,11 @@ There is no readiness declaration on `shell_start`. Readiness is observed, not c
 | `until: {kind: "pattern", regex, stream, since}` | Regex over the declared stream (default `combined`) from a recorded offset | `expect` |
 | `until: {kind: "exit"}` | The execution reaches a terminal state | `wait(2)` |
 
-The registry checks the marker on every log poll (250 ms for an owned execution, 500 ms for an adopted one) and whenever an await evaluates. The first observation sets `readyAt`, persists it, and fires `onReady` for the UI. The marker is out of band: a change in output formatting cannot break it, and a command that never creates one is simply never ready.
+The registry checks the marker on every log poll. A log poll runs every 250 ms for an owned execution and 500 ms for an adopted one. When an await evaluates, the registry checks the marker again. The first observation sets `readyAt`, persists it, and fires `onReady` for the UI. The marker is out of band, so a change in output formatting cannot break it. A command that never creates one is never ready.
 
-A pattern wait is incremental. The registry records a byte offset (0 by default, the current file size for `since: "now"`, or a caller-supplied number), reads the new bytes, splits them into lines, and keeps the last partial line for the next chunk. A line match reports the line and its byte offset. A partial final line is still output, so a prompt that ends without a newline can satisfy the pattern while the process keeps running. If the execution settles without a match, the wait is satisfied with no `matched` value; the caller learns that the command ended instead of waiting forever.
+A pattern wait is incremental. The registry records a byte offset (0 by default, the current file size for `since: "now"`, or a caller-supplied number). It reads the new bytes, splits them into lines, and keeps the last partial line for the next chunk. A line match reports the line and its byte offset. A partial final line is still output, so a prompt that ends without a newline can satisfy the pattern while the process keeps running. If the execution settles without a match, the wait is satisfied with no `matched` value. The caller learns that the command ended instead of waiting forever.
 
-A `pipe` keeps separate `stdout.log` and `stderr.log`, so `stream: "stderr"` cannot be satisfied by a `stdout` line. A `pty` merges both streams into one recording, and its `stdout.log` is a link to that recording, so both names observe the same bytes there. `stream: "ptyView"` in a pattern wait reads the same recording file as `combined` for a `pty`; the screen model is applied by `shell_read`, not by a wait.
+A `pipe` keeps separate `stdout.log` and `stderr.log`, so `stream: "stderr"` cannot be satisfied by a `stdout` line. A `pty` merges both streams into one recording. Its `stdout.log` is a link to that recording, so both names observe the same bytes there. For a `pty`, `stream: "ptyView"` in a pattern wait reads the same recording file as `combined`. `shell_read` applies the screen model, not a wait.
 
 ---
 
@@ -206,7 +215,7 @@ A `pipe` keeps separate `stdout.log` and `stderr.log`, so `stream: "stderr"` can
 
 ### 6.1 Same process, `/reload`
 
-`session_shutdown(reason: "reload")` transfers live handles to a process-global slot, `Symbol.for("pi-async-shell.reload-hub.v1")`, keyed by `(pid, sessionId, realpath(cwd))` with a 30s claim deadline. Child processes, streams, waiters and cumulative byte counts move. Nothing restarts, and no byte is lost. A fresh activation that never claims the slot lets it expire, and the handles then follow the normal cancellation ladder rather than staying unowned.
+`session_shutdown(reason: "reload")` transfers live handles to a process-global slot, `Symbol.for("pi-async-shell.reload-hub.v1")`, keyed by `(pid, sessionId, realpath(cwd))` with a 30s claim deadline. Child processes, streams, waiters and cumulative byte counts move. Nothing restarts, and no byte is lost. A fresh activation that never claims the slot lets it expire. The handles then follow the normal cancellation ladder rather than staying unowned.
 
 ### 6.2 Cross process, `scope: "workspace"`
 
@@ -219,19 +228,19 @@ On `session_shutdown(reason: quit|new|resume|fork)` the runtime leaves workspace
 | No `exit.json`, liveness unprovable | `lost` |
 | More than five adoption attempts | `lost` with a restart-limit diagnostic |
 
-Liveness identity is `(boot_id, pid, starttime)`. A bare pid is insufficient. After a reboot the kernel reuses the number space, and adopting a stranger's process to report its exit code is worse than reporting `lost`. `starttime` comes from `/proc/<pid>/stat` field 22, and it is stable for the lifetime of the process.
+Liveness identity is `(boot_id, pid, starttime)`. A bare pid is insufficient. After a reboot the kernel reuses the number space. Adopting a stranger's process to report its exit code is worse than reporting `lost`. `starttime` comes from `/proc/<pid>/stat` field 22. It is stable for the lifetime of the process.
 
-For any `workspace` execution, the child holding the log fd corroborates liveness as well. If the file's size or mtime advances over a 120 ms sample, the writer is alive, even when `/proc` is unreadable. A `pty` execution that is merely idle — waiting at a prompt — is alive by identity and quiet in the log, so identity is checked first.
+For any `workspace` execution, the child holding the log fd corroborates liveness as well. If the file's size or mtime advances over a 120 ms sample, the writer is alive, even when `/proc` is unreadable. A `pty` execution that is merely idle — waiting at a prompt — is alive by identity and quiet in the log. The runtime therefore checks identity first.
 
-A completion that settled while no Pi process was watching, and whose notification is enabled, is surfaced once at `session_start` as an `<async-shell-workspace>` message. The writer records `.surfaced` in the execution directory, so a later session does not repeat it. Only the lock owner surfaces records; a read-only observer never writes the marker.
+A completion that settled while no Pi process was watching, and whose notification is enabled, is surfaced once at `session_start` as an `<async-shell-workspace>` message. The writer records `.surfaced` in the execution directory, so a later session does not repeat it. Only the lock owner surfaces records. A read-only observer never writes the marker.
 
-The writer lock is `.pi/async-shell/workspace/.lock`, created with `O_EXCL` and a holder identity. A lock whose holder is no longer alive is stale and is replaced. A process that cannot take the lock opens the registry read-only: it may read status and logs, and `shell_promote`, `shell_send` and `shell_cancel` refuse rather than race the owner.
+The writer lock is `.pi/async-shell/workspace/.lock`, created with `O_EXCL` and a holder identity. A lock whose holder is no longer alive is stale and is replaced. A process that cannot take the lock opens the registry read-only. It may read status and logs, while `shell_promote`, `shell_send` and `shell_cancel` refuse rather than race the owner.
 
 ---
 
 ## 7. Storage and Garbage Collection
 
-`ensureRegistryDirs` creates `.pi/async-shell/`, `sessions/`, `workspace/` and `requests/`, and writes a `.gitignore` containing `*` with the no-replace flag. An existing `.gitignore` is never overwritten.
+`ensureRegistryDirs` creates `.pi/async-shell/`, `sessions/`, `workspace/` and `requests/`, and writes a `.gitignore` containing `*` with the no-replace flag. The no-replace flag leaves an existing `.gitignore` unchanged.
 
 GC runs when the registry is constructed and then hourly. It removes only sealed, terminal records:
 
@@ -241,18 +250,18 @@ GC runs when the registry is constructed and then hourly. It removes only sealed
 | Terminal record count | 100 | `PI_ASYNC_SHELL_GC_MAX_RECORDS` |
 | Count-eviction grace | 5 minutes of age | fixed |
 
-It never collects a running or nonterminal record, a record protected by a loaded handle, or a record in the current session directory. A crashed owner must not turn a live workspace process into garbage. When a record is removed, its promoted symlink is removed too, and an empty session directory is pruned. Orphan request records older than the retention window and not naming a known execution are removed in the same pass.
+Running records, nonterminal records, records protected by a loaded handle, and records in the current session directory stay untouched. A crashed owner leaves live workspace processes in place. When a record is removed, its promoted symlink is removed too. An empty session directory is pruned. Orphan request records older than the retention window and not naming a known execution are removed in the same pass.
 
 ---
 
 ## 8. Implementation Order
 
-**Phase 1 — registry, `pipe`, `session` scope.** Handle registry, sealed metadata, the detached pipe supervisor with file-bound logs and the drain-not-kill cap, `shell_start`/`await`/`read`/`cancel`/`status`, completion coalescing, `consumedByAwait` suppression, `/reload` handoff, and the containment fence that makes cancellation mean something.
+**Phase 1 — registry, `pipe`, `session` scope.** The phase ships the handle registry, sealed metadata, and the detached pipe supervisor. That supervisor owns file-bound logs and the drain-not-kill cap. It ships `shell_start`/`await`/`read`/`cancel`/`status`, completion coalescing, `consumedByAwait` suppression, and `/reload` handoff. It ships the containment fence that makes cancellation mean something.
 
-**Phase 2 — `pty`.** The detached `script(1)` recipe, the stdin FIFO, `shell_send`, the ready marker and pattern waits, wrapper markers, `ptyView` reads.
+**Phase 2 — `pty`.** The phase ships the detached `script(1)` recipe, the stdin FIFO, `shell_send`, the ready marker and pattern waits, wrapper markers, and `ptyView` reads.
 
-**Phase 3 — `workspace` scope.** Workspace adoption, `shell_promote`, re-adoption scan, `lost` handling, PID-reuse-safe identity, writer lock, GC, `/async-shell` list.
+**Phase 3 — `workspace` scope.** The phase ships workspace adoption and `shell_promote`. It ships the re-adoption scan, `lost` handling, and PID-reuse-safe identity. It ships the writer lock, GC, and the `/async-shell` list.
 
 Each phase is independently shippable. Phase 1 already satisfies the original three requirements, without a PTY and without cross-process persistence.
 
-**0.2.0** removed `turn` scope and its settle-time error, removed `shell_start.readiness`, made the pipe supervisor universal so both bindings promote losslessly, added the Linux/procfs guards, the credential filter, the ready marker and partial-line pattern waits, and the GC pass.
+**0.2.0** removed `turn` scope and its settle-time error. It removed `shell_start.readiness`. It made the pipe supervisor universal, so both bindings promote losslessly. It added the Linux/procfs guards, the credential filter, the ready marker, partial-line pattern waits, and the GC pass.

@@ -8,10 +8,15 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 
 - `shell_read` accepts `mode: "all"` as a bounded head read (2000 lines / 50 KiB) with paging guidance in the note.
 - Pipeline commands record `exitSource`: `pipefail` on bash-like shells, `last-command` on the POSIX fallback. Completion messages and await results include exit codes and bounded output excerpts.
+- A documentation toolchain. `scripts/check-docs.mjs` checks the cross-references, the bilingual mirror, the frontmatter version, the `Evidence:` test titles and every tool name, and it needs nothing but Node. Vale enforces the retired vocabulary of `00-terminology.md` section 10, lychee checks relative links and anchors, and both run in a separate CI job.
+- `docs/adr/` holds decisions in MADR format, `docs/rfcs/` holds proposals, and `spec/handle-lifecycle.qnt` models the completion and promotion contract in Quint. ADR 0001 to 0004 backfill the decisions the design series had been carrying as history.
+- The design series opens with frontmatter naming the version it applies to and the sources it tracks, and `tests/properties.test.ts` adds property tests over the ANSI stripper, the screen model and the log reader. `fast-check` is a devDependency.
 
 ### Changed
 
 - `CONTRIBUTING.md` requires [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). The commits before it were reworded to match, which changes their hashes without changing a single tree.
+- `pnpm verify` now runs the document contract check after the test suite. `pnpm run docs` adds the two gates that need a binary, and CI runs all three as its own job.
+- `docs/design/03-execution-model-and-primitives.md` documents `shell_read` `mode: "all"`, which the runtime has accepted since this release, and `docs/design/04-runtime-architecture.md` names `carrier` as code and calls the absent `shell_start` parameter a readiness option.
 
 ### Fixed
 

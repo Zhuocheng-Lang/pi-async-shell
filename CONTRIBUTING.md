@@ -34,13 +34,17 @@ The host packages are also declared in `peerDependencies` with a `*` range, whic
 | Command | What it does |
 |---|---|
 | `pnpm install` | Installs the dev toolchain from `pnpm-lock.yaml`. |
-| `pnpm verify` | `pnpm typecheck` followed by the full test suite. Run this before every pull request. |
+| `pnpm verify` | `pnpm typecheck`, then the full test suite, then the document contract check. Run this before every pull request. |
 | `pnpm typecheck` | `tsc --noEmit` over `src/` (including the shipped `.mjs` supervisor), `tests/`, `bench/` and `scripts/`. |
 | `pnpm test` | The full suite, one test file at a time. |
 | `pnpm test:unit` | Only the `tests/*.test.ts` files. |
 | `pnpm link-host` | Mirrors Pi's module store into `./node_modules` for the benchmark. |
 | `pnpm bench` | Regenerates `bench/out/results.json` and `bench/REPORT.md`. |
 | `pnpm pack --dry-run` | Lists the files the published tarball would contain. |
+| `pnpm run check:docs` | The document contract check. Node only, no binary. |
+| `pnpm run docs:prose` | Vale over `docs/`. Needs `vale` on `PATH`. |
+| `pnpm run docs:links` | lychee over the documentation set, offline. Needs `lychee` on `PATH`. |
+| `pnpm run docs` | All three documentation gates. |
 
 The suite starts real processes and a real Pi SDK session driven by a faux provider. It needs a Linux machine with a writable `/tmp`; it needs no network access.
 
@@ -49,7 +53,7 @@ The suite starts real processes and a real Pi SDK session driven by a faux provi
 - **A test that fails before the change.** The suite asserts on real process behaviour, so a fix without a test is a fix nobody can regress. `tests/helpers.ts` has `tempCwd`, `makeRegistry` and `waitFor`.
 - **A changelog entry** under `[Unreleased]` in `CHANGELOG.md`, using the Keep a Changelog sections: Added, Changed, Removed, Fixed, Security.
 - **Both READMEs** when a user-visible behaviour changes: `README.md` and `README.zh-CN.md`. They are maintained in parallel; a change to one is a change to the other.
-- **Runtime documentation** in `docs/implementation-notes.md` when the mechanics change, and a note in the `docs/design/` series when a decision has a trade-off worth recording.
+- **Runtime documentation** in `docs/implementation-notes.md` when the mechanics change, an edit to the `docs/design/` series when the design changes, and an ADR in `docs/adr/` when a decision has a trade-off worth recording. The next section says which file takes what.
 - **No new runtime dependencies.** The package ships with none and imports only the host packages Pi supplies. A new dependency needs a strong argument in the pull request.
 - **The tool surface stays at seven.** A new tool needs an issue that explains what the existing seven cannot express.
 
@@ -58,9 +62,39 @@ The suite starts real processes and a real Pi SDK session driven by a faux provi
 - TypeScript ES modules with `module: NodeNext`. Relative imports keep the `.ts` extension: `rewriteRelativeImportExtensions` handles the emit side and Node's type stripping handles the runtime side.
 - `strict` is on and the type checker must pass. `noEmit` is set, so `tsc` is a checker here, not a build step.
 - `checkJs` is on, so the two `.mjs` files under `src/` and `scripts/` are type-checked along with the `.ts` sources. Annotate them with JSDoc rather than loosening the config.
-- No linter or formatter is configured; that is a deliberate choice, not an omission. Match the surrounding style: two spaces, double quotes, semicolons, trailing commas in multiline literals. `.editorconfig` and `.gitattributes` keep indentation and line endings consistent across editors.
+- No code linter or formatter is configured; that is a deliberate choice, not an omission. The one lint in this repository is prose-only and covers `docs/`; the next section says why. Match the surrounding style: two spaces, double quotes, semicolons, trailing commas in multiline literals. `.editorconfig` and `.gitattributes` keep indentation and line endings consistent across editors.
 - Comments explain why a decision was made. The runtime has several deliberate oddities — the fd 3 release protocol, `trap - INT QUIT` before `exec`, the wrapper-side `exit.json` — and each one has a reason that outlives the code.
 - Runtime state belongs under `.pi/async-shell/`. Never write it into the repository root.
+
+## Documentation
+
+`docs/` has four gates. They answer different questions, and three of them need something beyond `pnpm install`.
+
+| Gate | Command | Needs | Question |
+|---|---|---|---|
+| Doc contract | `pnpm run check:docs` | Node | Do the cross-references resolve, do the two languages match, does the frontmatter name the current version, do the `Evidence:` test titles exist, is every tool name real |
+| Prose lint | `pnpm run docs:prose` | `vale` on `PATH` | Does new prose use a word that `00-terminology.md` section 10 retires |
+| Link check | `pnpm run docs:links` | `lychee` on `PATH` | Does every relative link and every `#anchor` resolve |
+| Model | see `spec/README.md` | `npx @informalsystems/quint` | Does an ownership or delivery invariant survive an interleaving nobody wrote a test for |
+
+`pnpm verify` runs the first one, because it needs nothing but Node. CI runs all four as a separate `docs` job. Run `pnpm run docs` when you touch `docs/` and you have the two binaries; run `pnpm run check:docs` otherwise, and let CI do the rest.
+
+### Which file takes what
+
+| The change | Where it goes |
+|---|---|
+| What the design is now | `docs/design/`, in both languages, in the same pull request |
+| Why a rule exists, or what it replaced | `docs/adr/`, a new number. An accepted ADR is never edited |
+| A design that is not decided yet | `docs/rfcs/` |
+| What the code does, and how it is tested | `docs/implementation-notes.md` |
+| A contract worth modelling | `spec/` |
+
+### Rules the design series follows
+
+- **Frontmatter on every file.** `applies_to` must equal the version in `package.json`, so a version bump names the documents that owe an edit. `tracks` lists the sources the document describes.
+- **A past version is marked.** A version literal that records history ends its line with `<!-- historical -->`. Any other mismatch fails the contract check, which is what keeps a stale number from surviving a release.
+- **`zh-CN/` mirrors `docs/design/`** file for file, with the same heading skeleton, the same fenced blocks, the same table shape and the same code identifiers. Prose differs; code does not.
+- **Cross-references are written for a checker.** Use `` `04-runtime-architecture.md` §6.2 `` rather than a bare "see above". A reference only a reader can follow is a reference that rots silently, which is what the four gates exist to prevent.
 
 ## Benchmarks
 

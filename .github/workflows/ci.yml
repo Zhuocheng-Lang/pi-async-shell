@@ -50,3 +50,50 @@ jobs:
       # extension, the skill or the license shows up here.
       - name: Check the published tarball
         run: pnpm pack --dry-run
+
+  # The documentation gates. They are a separate job because two of the three
+  # need a binary, and "pnpm verify" has to stay runnable from "pnpm install"
+  # alone. The contract check runs here too, so a docs-only pull request gets a
+  # named status rather than inheriting the node matrix.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Doc contract
+        run: pnpm run check:docs
+
+      # Pinned releases. A binary that moves with the registry would turn a
+      # prose lint into a build that fails for a reason the pull request cannot
+      # see.
+      - name: Install vale
+        run: |
+          curl -sSL -o vale.tar.gz https://github.com/errata-ai/vale/releases/download/v3.9.5/vale_3.9.5_Linux_64-bit.tar.gz
+          tar -xzf vale.tar.gz vale
+          sudo install -m 755 vale /usr/local/bin/vale
+          vale --version
+
+      - name: Prose lint
+        run: pnpm run docs:prose
+
+      - name: Install lychee
+        run: |
+          curl -sSL -o lychee.tar.gz https://github.com/lycheeverse/lychee/releases/download/lychee-v0.20.1/lychee-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf lychee.tar.gz lychee
+          sudo install -m 755 lychee /usr/local/bin/lychee
+          lychee --version
+
+      - name: Link check
+        run: pnpm run docs:links

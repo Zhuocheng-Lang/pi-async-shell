@@ -1,0 +1,22 @@
+# Link checking for the documentation set.
+#
+# Run with --offline by "pnpm run docs:links" and by CI, so the check answers one
+# question: does every relative link and every #anchor in this repository
+# resolve? External URL rot is a different job with a different failure mode, and
+# it is not wired to a pull request.
+#
+# Do not add a "file://" exclude here. Lychee normalises a relative link to an
+# absolute file:// URI before it applies this list, so that one pattern excludes
+# every local link and the check silently checks nothing.
+
+max_retries = 2
+timeout = 20
+
+# A link to a heading is a link. Section-number references inside backticks are
+# checked by scripts/check-docs.mjs; this covers the markdown form.
+include_fragments = true
+
+# No exclude list. The absolute paths in the ecosystem survey are quoted prose in
+# backticks, not links, so lychee never reaches them; an exclude pattern wide
+# enough to cover them also covers every file in a repository checked out under
+# /home, which turns the check into a no-op.

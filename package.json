@@ -58,7 +58,11 @@
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.ts\"",
     "test:unit": "node --test --test-concurrency=1 \"tests/*.test.ts\"",
     "bench": "node bench/run-bench.ts",
-    "verify": "pnpm run typecheck && pnpm test",
+    "check:docs": "node scripts/check-docs.mjs",
+    "docs:prose": "vale docs/",
+    "docs:links": "lychee --config lychee.toml --offline --no-progress \"docs/**/*.md\" README.md README.zh-CN.md CONTRIBUTING.md",
+    "docs": "pnpm run check:docs && pnpm run docs:prose && pnpm run docs:links",
+    "verify": "pnpm run typecheck && pnpm test && pnpm run check:docs",
     "prepublishOnly": "pnpm verify"
   },
   "peerDependencies": {
@@ -70,6 +74,7 @@
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
     "@types/node": "^22.20.5",
+    "fast-check": "^4.10.3",
     "typebox": "1.3.27",
     "typescript": "^6.0.3"
   },

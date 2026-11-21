@@ -1,0 +1,16 @@
+# Terms that docs/design/00-terminology.md section 10 retires.
+#
+# scope: text keeps the rule off headings and code spans. That is what lets the
+# glossary name a retired word in a heading and in backticks while a new sentence
+# that uses it as if it were current still fails.
+extends: substitution
+message: "Retired term. 00-terminology.md section 10 retires it; use '%s'."
+level: error
+ignorecase: true
+scope: text
+swap:
+  carrier: "supervision scope, or I/O binding"
+  background task: "scope, or binding"
+  readiness declaration: "the ready marker, or an await pattern"
+  cancelOnFirstFailure: "shell_cancel on the handle"
+  pane binding: "no equivalent; the pane binding was removed in 0.2.0"
