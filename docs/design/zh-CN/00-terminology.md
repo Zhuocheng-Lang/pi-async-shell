@@ -1,6 +1,6 @@
 ---
 kind: normative
-applies_to: 0.2.0-beta.3
+applies_to: 0.2.0
 tracks:
   - src/core/types.ts
   - src/extension.ts
@@ -8,7 +8,7 @@ tracks:
 
 # 00. 术语表
 
-本文固定 `pi-async-shell` 在 0.2.0-beta.3 的词汇。每个条目给出三项：定义、该术语防范的混淆，以及使用该术语的章节。
+本文固定 `pi-async-shell` 在 0.2.0 的词汇。每个条目给出三项：定义、该术语防范的混淆，以及使用该术语的章节。
 
 请按顺序阅读。第 2 节给出对象及其两条轴。第 3、4 节各自定义一条轴。第 5 至 9 节定义横切契约。第 10 节列出本项目已废弃的词。
 

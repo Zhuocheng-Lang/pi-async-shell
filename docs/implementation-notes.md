@@ -1,6 +1,6 @@
 ---
 kind: notes
-applies_to: 0.2.0-beta.3
+applies_to: 0.2.0
 tracks:
   - src/core/registry.ts
   - src/core/log-manager.ts
@@ -9,7 +9,7 @@ tracks:
 
 # Implementation Notes
 
-**Status:** 0.2.0-beta.3. The full test suite passes. The type checker is clean. The comparison benchmark in [`bench/REPORT.md`](../bench/REPORT.md) reproduces every claim the design makes about scope, binding, output, and persistence. §6 records what changed in 0.2.0.
+**Status:** 0.2.0. The full test suite passes. The type checker is clean. The comparison benchmark in [`bench/REPORT.md`](../bench/REPORT.md) reproduces every claim the design makes about scope, binding, output, and persistence. §6 records what changed in 0.2.0.
 
 This document records what the code does and the decisions that are easy to get wrong. It names the test that proves each contract and the limits a reader knows before relying on the package.
 

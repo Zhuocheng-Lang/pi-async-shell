@@ -2,7 +2,9 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-22
+
+The version number stops being a prerelease, so npm's `latest` points at it and tooling treats it as a normal release. The project is still pre-1.0: a minor version may change the API, and the README says so.
 
 ### Added
 

@@ -4,7 +4,7 @@ Pi 的持久异步 Shell 扩展。启动开发服务器、慢构建、测试套�
 
 [English](README.md)
 
-状态：beta · 目前仅支持 Linux。
+状态：beta · 0.x，API 可能随次版本变动 · 目前仅支持 Linux。
 
 ## 为什么不只用内置 `bash` 或普通后台扩展？
 

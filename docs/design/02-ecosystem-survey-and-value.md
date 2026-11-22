@@ -1,6 +1,6 @@
 ---
 kind: empirical
-applies_to: 0.2.0-beta.3
+applies_to: 0.2.0
 tracks:
   - package.json
   - bench/REPORT.md

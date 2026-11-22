@@ -1,6 +1,6 @@
 ---
 kind: normative
-applies_to: 0.2.0-beta.3
+applies_to: 0.2.0
 tracks:
   - src/core/types.ts
   - src/extension.ts
@@ -8,7 +8,7 @@ tracks:
 
 # 00. Terminology
 
-This document fixes the vocabulary of `pi-async-shell` at 0.2.0-beta.3. Each entry gives three things: the definition, the conflation the term guards against, and the sections that use the term.
+This document fixes the vocabulary of `pi-async-shell` at 0.2.0. Each entry gives three things: the definition, the conflation the term guards against, and the sections that use the term.
 
 Read the sections in order. Section 2 gives the object and its two axes. Sections 3 and 4 define each axis. Sections 5 to 9 define the cross-cutting contracts. Section 10 lists the words this project retired.
 

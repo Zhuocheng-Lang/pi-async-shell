@@ -4,7 +4,7 @@ Durable asynchronous shell commands for Pi. A dev server, slow build, test suite
 
 [中文说明](README.zh-CN.md)
 
-Status: beta · Linux only for now.
+Status: beta · 0.x, so the API can change in a minor release · Linux only for now.
 
 ## Why not just Pi's built-in `bash` or a basic background extension?
 

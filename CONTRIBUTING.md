@@ -112,7 +112,7 @@ pnpm bench
 
 - One concern per pull request. Keep unrelated formatting and renames out of a fix.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): a `type(scope): subject` header, where the type is one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore` or `revert`, the scope is optional and lowercase, and the subject is imperative, lowercase and has no trailing period. `fix(shell_read): clamp the log cap to the header line` shows the shape.
-- A breaking change carries `!` before the colon and a `BREAKING CHANGE:` footer. Release commits read `chore(release): 0.2.0-beta.3`.
+- A breaking change carries `!` before the colon and a `BREAKING CHANGE:` footer. Release commits read `chore(release): 0.2.0`.
 - Describe what changed, why, and what you ran. Paste the failing output when the change fixes a bug.
 - CI runs `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test` and `pnpm pack --dry-run` on Linux, on Node.js 22.19.0 and on the current release. A pull request that leaves CI red will not be merged.
 
