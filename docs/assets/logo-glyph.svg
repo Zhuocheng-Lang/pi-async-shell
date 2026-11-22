@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 800 800">
+  <title id="title">pi-async-shell glyph</title>
+  <desc id="desc">Frameless Earendil Works tri-color glyph for pi-async-shell: a Coral Red stepped prompt, Cerulean Blue async stream and base bar, and a detached Cream Yellow readiness block.</desc>
+  <!-- Orthogonal stepped prompt '>' in Elanor Coral Red -->
+  <path fill="#F09082" d="M136 168H256V288H376V408H256V528H136V408H256V288H136Z"/>
+  <!-- Async Track 1 + Bottom durable log base in Elanor Cerulean Blue -->
+  <path fill="#4D9ABF" d="M432 168H664V288H432ZM136 568H664V632H136Z"/>
+  <!-- Async Track 2: Workspace stream & Cream Yellow readiness beacon -->
+  <rect x="432" y="344" width="104" height="120" fill="#4B607C"/>
+  <rect x="560" y="344" width="104" height="120" fill="#F1BE58"/>
+</svg>

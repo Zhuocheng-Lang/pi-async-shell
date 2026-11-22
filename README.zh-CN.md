@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="pi-async-shell logo" src="docs/assets/logo.svg" width="128">
+</p>
+
 # pi-async-shell
 
 Pi 的持久异步 Shell 扩展。启动开发服务器、慢构建、测试套件或交互式 CLI 时立即返回句柄而不阻塞当前轮次；输出从进程启动起即落盘并支持正则检索，支持向真实 PTY 发送按键，且任务可跨 Pi 重启存活并被后续会话无缝接管。

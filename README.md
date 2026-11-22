@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="pi-async-shell logo" src="docs/assets/logo.svg" width="128">
+</p>
+
 # pi-async-shell
 
 Durable asynchronous shell commands for Pi. A dev server, slow build, test suite, or interactive CLI returns a handle immediately instead of blocking the turn, writes searchable logs to disk from spawn, accepts PTY keystrokes, and can survive a Pi restart.

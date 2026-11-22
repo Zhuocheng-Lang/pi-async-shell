@@ -2,6 +2,12 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
+## [0.2.1] - 2026-11-22
+
+### Added
+
+- A project icon drawn in the Earendil Works house style. `docs/assets/logo.svg` pairs the `pi.dev` Evening Blue slate (#161D27) and Tidal Blue frame (#4B607C) with the Elanor Coral Red (#F09082) stepped prompt, the Cerulean Blue (#4D9ABF) session stream and the Cream Yellow (#F1BE58) readiness block, and the 62%/38% active stripe reproduces `pi.dev`'s `--active-stripe`. `docs/assets/logo-glyph.svg` is the frameless tri-color variant, `docs/assets/favicon.svg` follows the `pi.dev` `prefers-color-scheme` monochrome convention, and `docs/assets/logo.png` is the 512px export. Both READMEs now open with the icon, matching the `earendil-works/pi` layout.
+
 ## [0.2.0] - 2026-11-22
 
 The version number stops being a prerelease, so npm's `latest` points at it and tooling treats it as a normal release. The project is still pre-1.0: a minor version may change the API, and the README says so.
@@ -110,5 +116,7 @@ _Never published: the npm registry accepted the upload as staged and then wedged
 - Long-lived children no longer inherit common LLM keys, tokens, and credential variables by default.
 - The local protected-paths integration covers shell_start commands and shell_send PTY input as well as bash redirections.
 
-[Unreleased]: https://github.com/Zhuocheng-Lang/pi-async-shell/compare/v0.2.0-beta.1...HEAD
+[Unreleased]: https://github.com/Zhuocheng-Lang/pi-async-shell/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.1
+[0.2.0]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.0
 [0.2.0-beta.1]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.0-beta.1

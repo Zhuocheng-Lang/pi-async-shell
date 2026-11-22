@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 800 800">
+  <title id="title">pi-async-shell logo</title>
+  <desc id="desc">An orthogonal Earendil Works terminal slate in Evening Blue (#161D27) framed by Tidal Blue (#4B607C), with a Coral Red (#F09082) stepped shell prompt, parallel Cerulean Blue (#4D9ABF) and Cream Yellow (#F1BE58) asynchronous execution tracks, and a Moonstone (#EBE7E4) durable log bar.</desc>
+  <!-- Outer Evening Blue terminal slate & Tidal Blue structural frame -->
+  <rect x="64" y="64" width="672" height="672" fill="#161D27"/>
+  <path fill="#4B607C" d="M64 64H736V736H64ZM96 96V704H704V96Z"/>
+  <!-- Top pi.dev active-stripe (62% Cerulean Blue / 38% Evening Blue) -->
+  <rect x="96" y="96" width="380" height="44" fill="#4D9ABF"/>
+  <rect x="476" y="96" width="228" height="44" fill="#252F3D"/>
+  <!-- Orthogonal stepped prompt '>' in Elanor Coral Red -->
+  <path fill="#F09082" d="M160 240H264V344H368V448H264V552H160V448H264V344H160Z"/>
+  <!-- Async Track 1: Session / PTY stream in Elanor Cerulean Blue -->
+  <rect x="424" y="240" width="216" height="104" fill="#4D9ABF"/>
+  <!-- Async Track 2: Workspace durable stream + Readiness beacon in Tidal Blue & Elanor Cream Yellow -->
+  <rect x="424" y="392" width="96" height="104" fill="#4B607C"/>
+  <rect x="544" y="392" width="96" height="104" fill="#F1BE58"/>
+  <!-- Durable on-disk log bar in pi.dev Moonstone -->
+  <rect x="160" y="592" width="480" height="52" fill="#EBE7E4"/>
+</svg>
