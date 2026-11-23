@@ -612,6 +612,8 @@ const basePromptGuidelines = [
   "shell_read with stream ptyView returns the rendered screen of a pty execution; use it after shell_send to see what a terminal UI is showing.",
   "shell_cancel verifies that the process tree is gone; cancellation stops processes but does not roll back their effects.",
   "A completion reaches a running agent as a steer message before the next LLM call; shell_start delivery: \"settle\" holds it until the run settles. Do not end the turn only to learn that a command finished.",
+  "When no later action in the task depends on an external state change, such as a registry index or a CDN cache refreshing after a local verification or a publish already succeeded, report what is verified and stop: do not poll with shell_await and do not start a watcher.",
+  "When a later action does depend on an external state, such as a CI run, start one command that exits when the condition resolves and give it timeoutSeconds; await it once, and if it does not settle, end the turn and let the completion message wake you.",
 ];
 
 export default function piAsyncShell(pi: ExtensionAPI): void {

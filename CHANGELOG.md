@@ -4,6 +4,10 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- The prompt guidelines and the bundled skill ask whether a later action depends on the external state before any wait starts. Nothing here wakes a turn for a bare condition, so the earlier shape of the rule — start one watcher that exits when the state changes, end the turn — invited a watcher for a refresh that no later action needed, such as a registry index after a publish that had already succeeded. The rule now says to report what is verified and stop in that case, and to start one watcher only when a later action depends on it, await it once, then end the turn. The skill also tells a `codemode` caller to read `settled`, `timedOutWaiting` and `note`, not `outcomes` alone.
+
 ### Fixed
 
 - `shell_start` and `shell_await` put their note in structured content as well as in the text result. A `codemode` script reads `structuredContent`, so a clamped `waitMs` or `inlineSettleMs`, and the end-the-turn guidance after a full-length wait, never reached it: the wait looked bounded for no stated reason, and the instruction that follows a full-length wait was lost.

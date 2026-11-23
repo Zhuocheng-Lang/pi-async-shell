@@ -214,6 +214,12 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
     assert.deepEqual(harness.toolSchema("shell_read").properties.mode.enum, ["tail", "head", "offset", "grep", "all"]);
     assert.equal(awaitSchema.properties.cancelOnFirstFailure, undefined);
     assert.match(harness.session.systemPrompt, /shell_start runs commands with `\/bin\/sh -c <command>`/);
+    // A wake-up needs something that exits, so the guidance asks whether the
+    // wait is needed at all before it names a watcher.
+    assert.match(
+      harness.session.systemPrompt,
+      /When no later action in the task depends on an external state change/,
+    );
 
     // Turn 1: start, await, read — the causal barrier pi-background-tasks lacks.
     harness.faux.setResponses([
