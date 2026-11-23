@@ -681,6 +681,10 @@ export class ShellRegistry {
 
     return await new Promise<ShellAwaitResult>((resolve) => {
       let done = false;
+      // A wait that was aborted is not a delivery: its result may never reach
+      // the model, so it takes ownership of nothing. Only a wait that finishes
+      // on its own consumes the terminal state it reports.
+      let aborted = false;
       const finish = (timedOutWaiting: boolean) => {
         if (done) return;
         done = true;
@@ -692,9 +696,11 @@ export class ShellRegistry {
         for (const exec of execs) {
           if (exec.finalized) {
             outcomes.push({ ...exec.handle });
-            exec.handle.consumedByAwait = true;
-            exec.meta.consumedByAwait = true;
-            void this.persist(exec);
+            if (!aborted) {
+              exec.handle.consumedByAwait = true;
+              exec.meta.consumedByAwait = true;
+              void this.persist(exec);
+            }
           } else {
             stillRunning.push({ ...exec.handle });
           }
@@ -726,6 +732,7 @@ export class ShellRegistry {
       const onAbort = () => {
         // Aborting a wait detaches the waiter only. It never enters the
         // cancellation ladder: cancelling a consumer is not cancelling a producer.
+        aborted = true;
         finish(true);
       };
 
@@ -734,6 +741,7 @@ export class ShellRegistry {
       timer.unref?.();
       if (signal) {
         if (signal.aborted) {
+          aborted = true;
           finish(true);
           return;
         }
@@ -1058,16 +1066,27 @@ export class ShellRegistry {
       const completionPath = join(dir, "completion.json");
       const surfacedPath = join(dir, ".surfaced");
       if (existsSync(surfacedPath)) continue;
+      // A settle that an await reported already reached the model as a tool
+      // result. Marking it records that delivery, so no later process offers
+      // the same outcome as news from an unwatched execution.
+      if (meta.consumedByAwait) {
+        this.markSurfaced(surfacedPath, "consumedByAwait");
+        continue;
+      }
       const completion = readJson<CompletionRecord>(completionPath);
       if (!completion) continue;
       out.push(completion);
-      try {
-        writeJsonAtomicSync(surfacedPath, { surfacedAt: now(), by: process.pid });
-      } catch {
-        /* the record stays on disk */
-      }
+      this.markSurfaced(surfacedPath, "surfaced");
     }
     return out;
+  }
+
+  private markSurfaced(surfacedPath: string, reason: "surfaced" | "consumedByAwait"): void {
+    try {
+      writeJsonAtomicSync(surfacedPath, { surfacedAt: now(), by: process.pid, reason });
+    } catch {
+      /* the record stays on disk */
+    }
   }
 
   private workspaceRecords(): ShellHandle[] {

@@ -68,7 +68,7 @@ Contract-to-evidence map:
 | C1 — states; readiness is a milestone | `pty.test.ts` ("a marker file declares readiness out of band"), `registry.test.ts` ("timeoutSeconds settles as timed-out through the ladder") |
 | C2 — readiness is a wait condition | `registry.test.ts` ("a ready marker works without any shell_start readiness declaration"), `registry.test.ts` ("an await pattern observes only the selected stream", "a pattern wait with since=now cannot re-match an answered prompt", "an await pattern matches a prompt before a newline arrives") |
 | C3 — completion is an event, not a poll | `extension-e2e.test.ts` ("three completions coalesce into one message") |
-| A settle is reported once | `extension-e2e.test.ts` ("a command that settles inside the start call returns its result there", "a command that outlives the inline window keeps the handle and still notifies", "inlineSettleMs: 0 returns at once and leaves the completion channel alone", "inline settle handles undefined and aborted signals without losing notifications") |
+| A settle is reported once | `extension-e2e.test.ts` ("a command that settles inside the start call returns its result there", "an await that reports the settle does not announce it again", "an await in mode all holds a sibling's settle until both are reported", "an aborted await hands its held settle back to the completion channel", "a command that outlives the inline window keeps the handle and still notifies", "inlineSettleMs: 0 returns at once and leaves the completion channel alone", "inline settle handles undefined and aborted signals without losing notifications") |
 | C4 — cancellation ladder + verification | `registry.test.ts` ("cancel proves the tree is gone, including a setsid escapee", "the fence reaches a child that cleared its env and lost its parent", "graceful cancel uses SIGTERM before the fence") |
 | C5 — drain, never stop reading | `registry.test.ts` ("the session pipe log cap drains instead of killing or blocking the child", "the workspace pipe log cap drains instead of killing or blocking the child") |
 | C6 — `(boot_id, pid, start)` identity | `workspace.test.ts` ("an unprovable workspace record becomes lost, never completed"), `identity.ts` |
@@ -155,7 +155,17 @@ Evidence: `maintenance.test.ts` — the three GC and gitignore tests.
 
 ### 3.13 A settle is claimed by the call that reports it
 
-For `inlineSettleMs`, `shell_start` holds its own result. A command that ends immediately then costs one tool round trip instead of two. The ordering is the whole design. `finalize` hands the record to `onSettle` before any waiter observes the terminal state. A wait that starts afterwards is therefore too late to suppress the completion message. The extension claims the id for as long as the start call waits. When the wait ends without a settle, the extension releases the claim. A command that outlives the window keeps its handle and announces its own completion. When a command settles inside the window, the tool result delivers it. The runtime drops a queued record for a settle that raced admission instead of sending it twice. No execution changes state because a start call stopped waiting.
+For `inlineSettleMs`, `shell_start` holds its own result. A command that ends immediately then costs one tool round trip instead of two. The ordering is the whole design. `finalize` hands the record to `onSettle` before any waiter observes the terminal state. A wait that starts afterwards is therefore too late to suppress the completion message.
+
+The fix is a claim taken before the wait, not a flag applied after it. A call that will report outcomes claims every id it names, and `onSettle` holds a record for a claimed id instead of queueing it. A held record starts no coalescing window, so a settle that lands while the call still waits for a sibling cannot leave as a completion message. When the call returns and it was not aborted, it consumes the terminal outcomes it reports: the held record is dropped, any record already in the queue is withdrawn, and the id is marked delivered. Releasing the claim returns whatever it still holds to the completion channel. That release is what keeps an abort, an expired wait, a readiness wait and a `mode: "any"` wait whose other handles settle later correct. Claims are reference-counted, because two waits can name one handle.
+
+An aborted wait is not a delivery, because its result may never reach the model. `awaitHandles` therefore marks `consumedByAwait` only for a waiter that can still report: an abort returns the outcomes it observed and leaves the flag, its metadata and the completion record alone.
+
+The same rule covers a `workspace` record. An await that consumed one already delivered it as a tool result, so `workspaceCompletions` marks the record `.surfaced` instead of offering it at the next `session_start` as news from an unwatched execution.
+
+No execution changes state because a call stopped waiting.
+
+Evidence: `extension-e2e.test.ts` — "an await in mode all holds a sibling's settle until both are reported", "an aborted await hands its held settle back to the completion channel"; `workspace.test.ts` — "a workspace completion an await reported is not surfaced again".
 
 ### 3.14 Timeout and await observe finalized cleanup, not status labels
 

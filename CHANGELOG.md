@@ -2,6 +2,12 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- A settle that `shell_await` reports is no longer announced a second time, including while the call still waits on another handle. The settle reaches the completion channel before the await can observe it, so every awaited run also produced a completion message, and a caller that already read the outcome paid for the same result twice. A wait now claims the ids it reports before it waits, which holds their records instead of announcing them: the call consumes the terminal outcomes it delivers, and hands anything it did not report back to the completion channel. An aborted call claims nothing, because its outcome may never reach the model, and a workspace record that an await consumed is no longer surfaced at the next `session_start`.
+
 ## [0.2.2] - 2026-11-23
 
 ### Fixed

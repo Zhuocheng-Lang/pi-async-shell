@@ -309,6 +309,147 @@ test("a command that settles inside the start call returns its result there", { 
   }
 });
 
+test("an await that reports the settle does not announce it again", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    // The start call returns before the settle, so shell_await is what reports
+    // the outcome.
+    const started = await harness.callTool("shell_start", {
+      command: "sleep 0.4; echo awaited-hello",
+      scope: "session",
+      inlineSettleMs: 0,
+      notifyOnCompletion: true,
+    });
+    const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id, "the start result must carry a handle id");
+    assert.match(started, /running/);
+    const awaited = await harness.callTool("shell_await", { ids: id, waitMs: 10_000 });
+    assert.match(awaited, /completed/);
+    // The settle was reported by this call, so it must not be reported twice.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(customMessages(harness.session, "async-shell-completion").length, 0);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("an await in mode all holds a sibling's settle until both are reported", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  const previousWindow = process.env.PI_ASYNC_SHELL_COALESCE_MS;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  // A zero window sends every queued record the moment it is queued, so a
+  // settle that leaks out of the wait shows up as its own message at once.
+  process.env.PI_ASYNC_SHELL_COALESCE_MS = "0";
+  const harness = await createHarness();
+  try {
+    const first = await harness.callTool("shell_start", {
+      command: "sleep 0.2; echo first-settled",
+      scope: "session",
+      inlineSettleMs: 0,
+      triggerOnCompletion: false,
+    });
+    const firstId = first.match(/sh_[0-9a-f]{8}/)?.[0];
+    const second = await harness.callTool("shell_start", {
+      command: "sleep 1.2; echo second-settled",
+      scope: "session",
+      inlineSettleMs: 0,
+      triggerOnCompletion: false,
+    });
+    const secondId = second.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(firstId && secondId, "both starts must carry a handle id");
+    const awaited = await harness.callToolResult("shell_await", {
+      ids: [firstId, secondId],
+      mode: "all",
+      waitMs: 20_000,
+    });
+    assert.equal(awaited.structuredContent.settled, true);
+    assert.equal(awaited.structuredContent.outcomes.length, 2);
+    const text = (awaited.content as { text?: string }[]).map((block) => block.text ?? "").join("\n");
+    assert.match(text, new RegExp(firstId));
+    assert.match(text, new RegExp(secondId));
+    // The first handle settled while the wait still waited for the second. Both
+    // outcomes are in this result, so neither may arrive as a message as well.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(customMessages(harness.session, "async-shell-completion").length, 0);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+    if (previousWindow === undefined) delete process.env.PI_ASYNC_SHELL_COALESCE_MS;
+    else process.env.PI_ASYNC_SHELL_COALESCE_MS = previousWindow;
+  }
+});
+
+test("an aborted await hands its held settle back to the completion channel", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  const previousWindow = process.env.PI_ASYNC_SHELL_COALESCE_MS;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  process.env.PI_ASYNC_SHELL_COALESCE_MS = "0";
+  const harness = await createHarness();
+  try {
+    const quick = await harness.callTool("shell_start", {
+      command: "sleep 0.6; echo aborted-await-quick",
+      scope: "session",
+      inlineSettleMs: 0,
+      triggerOnCompletion: false,
+    });
+    const quickId = quick.match(/sh_[0-9a-f]{8}/)?.[0];
+    const slow = await harness.callTool("shell_start", {
+      command: "sleep 30",
+      scope: "session",
+      inlineSettleMs: 0,
+    });
+    const slowId = slow.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(quickId && slowId, "both starts must carry a handle id");
+    const controller = new AbortController();
+    const pending = harness.callToolResult(
+      "shell_await",
+      { ids: [quickId, slowId], mode: "all", waitMs: 60_000 },
+      controller.signal,
+    );
+    // The quick handle settles while the call still waits for the slow one, so
+    // its record is held under the claim and nothing is announced.
+    let settledWhileWaiting = false;
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      if ((await harness.callTool("shell_status", { id: quickId })).includes("completed")) {
+        settledWhileWaiting = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(settledWhileWaiting, true, "the quick handle must settle before the abort");
+    assert.equal(
+      customMessages(harness.session, "async-shell-completion").length,
+      0,
+      "a claimed settle is held, not announced",
+    );
+    controller.abort();
+    const aborted = await pending;
+    assert.equal(aborted.structuredContent.settled, false);
+    // The aborted call never reached the model, so the released record is the
+    // only report of the quick run.
+    assert.equal(
+      await waitFor(() => Boolean(completionForId(harness.session, quickId))),
+      true,
+      "the released record must still be announced",
+    );
+    const status = await harness.callToolResult("shell_status", { id: quickId });
+    assert.equal(status.structuredContent.handles[0].consumedByAwait, false, "an aborted await claims nothing");
+    await harness.callTool("shell_cancel", { ids: slowId, ladder: "force" });
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+    if (previousWindow === undefined) delete process.env.PI_ASYNC_SHELL_COALESCE_MS;
+    else process.env.PI_ASYNC_SHELL_COALESCE_MS = previousWindow;
+  }
+});
+
 test("a command that outlives the inline window keeps the handle and still notifies", { timeout: 120_000 }, async () => {
   const previousShell = process.env.PI_ASYNC_SHELL;
   process.env.PI_ASYNC_SHELL = "/bin/sh";

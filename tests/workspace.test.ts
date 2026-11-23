@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { bootId } from "../src/core/identity.ts";
@@ -107,6 +107,61 @@ test("a read-only observer never adopts workspace handles", async () => {
     // Reading the record is still allowed.
     const records = registry.status().handles;
     assert.equal(records.length, 1);
+  } finally {
+    await registry.shutdown("quit");
+  }
+});
+
+test("a workspace completion an await reported is not surfaced again", async () => {
+  const cwd = tempCwd("pas-ws-");
+  const registry = makeRegistry(cwd, { sessionId: "awaiter" });
+  registry.setWorkspaceOwner(true);
+  try {
+    const awaited = await registry.start({
+      command: "echo awaited-workspace",
+      scope: "workspace",
+      notifyOnCompletion: true,
+    });
+    const outcome = await registry.awaitHandles({ ids: awaited.id, waitMs: 20_000 });
+    assert.equal(outcome.settled, true);
+    // The tool result was the delivery, so the record must not be offered again.
+    // The flag has to reach the sealed record, because the scan reads meta.json
+    // rather than this process's memory.
+    const metaPath = join(registry.paths.workspaceDir, awaited.id, "meta.json");
+    assert.equal(
+      await waitFor(() => {
+        try {
+          return JSON.parse(readFileSync(metaPath, "utf8")).consumedByAwait === true;
+        } catch {
+          return false;
+        }
+      }, 10_000),
+      true,
+      "the consumed flag must be persisted",
+    );
+    assert.deepEqual(registry.workspaceCompletions(), [], "an awaited record is not offered again");
+    const marker = JSON.parse(
+      readFileSync(join(registry.paths.workspaceDir, awaited.id, ".surfaced"), "utf8"),
+    ) as { reason?: string };
+    assert.equal(marker.reason, "consumedByAwait");
+
+    // A record nobody awaited is still surfaced, exactly once.
+    const unwatched = await registry.start({
+      command: "echo unwatched-workspace",
+      scope: "workspace",
+      notifyOnCompletion: true,
+    });
+    let surfaced: string[] = [];
+    assert.equal(
+      await waitFor(() => {
+        surfaced = registry.workspaceCompletions().map((record) => record.id);
+        return surfaced.length > 0;
+      }, 20_000),
+      true,
+      "an unawaited record must still be surfaced",
+    );
+    assert.deepEqual(surfaced, [unwatched.id]);
+    assert.deepEqual(registry.workspaceCompletions(), [], "a surfaced record is not offered twice");
   } finally {
     await registry.shutdown("quit");
   }

@@ -19,6 +19,7 @@ import { acquireWorkspaceLock, releaseWorkspaceLock } from "./core/workspace-loc
 import { describeShellPolicy, resolveShell } from "./core/shell-policy.ts";
 import type {
   CompletionRecord,
+  ShellAwaitResult,
   ShellCancelResult,
   ShellHandle,
   ShellSendResult,
@@ -45,8 +46,11 @@ interface ExtensionState {
   uiTimer?: NodeJS.Timeout;
   flushTimer?: NodeJS.Timeout;
   delivered: Set<string>;
-  /** Executions whose settle an open tool call is returning itself. */
-  settleClaims: Set<string>;
+  /**
+   * Ids an open wait is holding, with a reference count. A settle for a claimed
+   * id is held rather than announced, because that call is the delivery.
+   */
+  settleClaims: Map<string, number>;
   /** Settles that arrived under a claim, held until that call decides. */
   heldSettles: Map<string, CompletionRecord>;
   shellPolicyText: string;
@@ -57,7 +61,7 @@ const state: ExtensionState = {
   busy: false,
   pending: [],
   delivered: new Set(),
-  settleClaims: new Set(),
+  settleClaims: new Map(),
   heldSettles: new Map(),
   shellPolicyText: "",
 };
@@ -270,14 +274,61 @@ function sendHeadline(result: ShellSendResult): string {
 }
 
 /**
+ * Take a claim on the ids a wait will report.
+ *
+ * A settle reaches `onSettle` before any waiter can observe it, so its record
+ * exists before the wait returns. A claim holds that record instead of queueing
+ * it, and a held record starts no coalescing window: a settle that lands while
+ * the call still waits for a sibling must not leave as a completion message.
+ * The count is per id, because two calls can name one handle.
+ */
+function claimSettles(ids: string[]): void {
+  for (const id of ids) state.settleClaims.set(id, (state.settleClaims.get(id) ?? 0) + 1);
+}
+
+/**
+ * Report these outcomes from this call.
+ *
+ * The call that describes a settle is its delivery: the held record is dropped,
+ * a record that already reached the queue is withdrawn, and the id is marked
+ * delivered, so the run is reported once. `shell_start` and `shell_await` both
+ * report outcomes, so both consume.
+ */
+function consumeSettles(handles: ShellHandle[], consumed: Set<string>): void {
+  for (const handle of handles) {
+    state.heldSettles.delete(handle.id);
+    state.delivered.add(handle.id);
+    state.pending = state.pending.filter((record) => record.id !== handle.id);
+    consumed.add(handle.id);
+  }
+}
+
+/**
+ * Drop a claim.
+ *
+ * A held record this call did not report — the wait was aborted, it expired, it
+ * was satisfied by a sibling, or it observed readiness rather than a settle —
+ * goes back to the completion channel, which still has to announce that run.
+ */
+function releaseSettles(ids: string[], consumed: Set<string>): void {
+  for (const id of ids) {
+    const count = state.settleClaims.get(id) ?? 0;
+    if (count > 1) {
+      state.settleClaims.set(id, count - 1);
+      continue;
+    }
+    state.settleClaims.delete(id);
+    if (!consumed.has(id)) releaseHeldSettle(id);
+  }
+}
+
+/**
  * Hold a `shell_start` call open long enough for a command to finish inside it.
  *
- * A settle reaches `onSettle` before any waiter can observe it, so the id is
- * claimed for as long as the call waits. A record that arrives under the claim
- * is held, not dropped: the call either reports it inline or hands it back to
- * the completion channel. The claim is released when the wait ends without a
- * settle, and a command that outlives the window announces its own completion
- * exactly as before.
+ * The id is claimed for as long as the call waits, and a record that arrives
+ * under the claim is held, not dropped: the call either reports it inline or
+ * hands it back to the completion channel. A command that outlives the window
+ * keeps its handle and announces its own completion exactly as before.
  */
 async function holdForSettle(
   registry: ShellRegistry,
@@ -288,7 +339,8 @@ async function holdForSettle(
   // An aborted tool call must not consume the settle: its result may never
   // reach the model, and the completion channel still has to report the run.
   if (inlineSettleMs <= 0 || signal?.aborted) return undefined;
-  state.settleClaims.add(handle.id);
+  const consumed = new Set<string>();
+  claimSettles([handle.id]);
   try {
     const outcome = await registry.awaitHandles(
       { ids: handle.id, waitMs: inlineSettleMs, includeOutputPreview: false },
@@ -297,15 +349,10 @@ async function holdForSettle(
     if (signal?.aborted) return undefined;
     const settled = outcome.outcomes.find((candidate) => candidate.id === handle.id);
     if (!settled) return undefined;
-    // This call is the delivery. A settle that raced the admission is already
-    // queued, so it is dropped here instead of arriving a second time.
-    state.heldSettles.delete(settled.id);
-    state.delivered.add(settled.id);
-    state.pending = state.pending.filter((record) => record.id !== settled.id);
+    consumeSettles([settled], consumed);
     return settled;
   } finally {
-    state.settleClaims.delete(handle.id);
-    releaseHeldSettle(handle.id);
+    releaseSettles([handle.id], consumed);
   }
 }
 
@@ -759,7 +806,20 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       const registry = requireRegistry();
       const requestedWaitMs = params.waitMs ?? DEFAULT_WAIT_MS;
       const waitMs = Math.max(0, Math.min(MAX_WAIT_MS, requestedWaitMs));
-      const result = await registry.awaitHandles({ ...params, waitMs } as never, signal);
+      const ids = Array.isArray(params.ids) ? params.ids : [params.ids];
+      const consumed = new Set<string>();
+      // The claim exists before the wait starts. A settle that lands mid-wait is
+      // held for this call, which is the only call that can report it once.
+      claimSettles(ids);
+      let result: ShellAwaitResult;
+      try {
+        result = await registry.awaitHandles({ ...params, waitMs } as never, signal);
+        // An aborted call may never reach the model, so its outcome is not a
+        // delivery: the completion channel still has to report the run.
+        if (!signal?.aborted) consumeSettles(result.outcomes, consumed);
+      } finally {
+        releaseSettles(ids, consumed);
+      }
       const lines: string[] = [];
       if (requestedWaitMs > MAX_WAIT_MS) {
         lines.push(
