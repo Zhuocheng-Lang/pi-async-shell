@@ -1,6 +1,6 @@
 ---
 kind: empirical
-applies_to: 0.2.1
+applies_to: 0.2.2
 tracks:
   - src/core/containment.ts
   - src/core/identity.ts

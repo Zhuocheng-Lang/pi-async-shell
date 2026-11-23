@@ -1,6 +1,6 @@
 ---
 kind: normative
-applies_to: 0.2.1
+applies_to: 0.2.2
 tracks:
   - src/core/types.ts
   - src/extension.ts

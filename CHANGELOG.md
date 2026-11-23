@@ -2,7 +2,7 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
-## [Unreleased]
+## [0.2.2] - 2026-11-23
 
 ### Fixed
 
@@ -122,7 +122,8 @@ _Never published: the npm registry accepted the upload as staged and then wedged
 - Long-lived children no longer inherit common LLM keys, tokens, and credential variables by default.
 - The local protected-paths integration covers shell_start commands and shell_send PTY input as well as bash redirections.
 
-[Unreleased]: https://github.com/Zhuocheng-Lang/pi-async-shell/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Zhuocheng-Lang/pi-async-shell/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.2
 [0.2.1]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.0
 [0.2.0-beta.1]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.0-beta.1
