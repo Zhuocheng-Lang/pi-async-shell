@@ -171,6 +171,12 @@ Evidence: `extension-e2e.test.ts` — "an await in mode all holds a sibling's se
 
 `enforceTimeout` sets the `timed-out` label early. The runtime seals the record only after the graceful signal, the grace period, the fence and `verifyGone`. While the captured identity is still alive, the exit watcher refuses to finalize. A supervisor's `exit.json` therefore cannot make a still-running tree look settled. `shell_cancel` waits for the same `finalized` event rather than for a status string. This is what makes "cancel returns after the tree is gone" true rather than aspirational.
 
+### 3.15 A result note belongs in both channels
+
+By host convention, `content` is what the model reads and `structuredContent` is what a program reads. The clamping notices (`waitMs` above 50 s, `inlineSettleMs` above 10 s) and the end-the-turn advice after a full-length wait existed only in `content`, so a `codemode` script that read `tools.shell_await(...)` lost them: it saw a bounded wait with no explanation and no instruction about what to do next. Both results now carry a `note` field with the same text, and `ShellStartResult` and `ShellAwaitResult` name it in the type.
+
+Evidence: `extension-e2e.test.ts` — "oversized wait and inline-settle values are clamped with a visible note", "an expired wait carries its guidance in structured content".
+
 ---
 
 ## 4. Known limits of 0.2.0

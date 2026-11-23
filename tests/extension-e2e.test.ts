@@ -662,24 +662,57 @@ test("oversized wait and inline-settle values are clamped with a visible note", 
   process.env.PI_ASYNC_SHELL = "/bin/sh";
   const harness = await createHarness();
   try {
-    const started = await harness.callTool("shell_start", {
+    const started = await harness.callToolResult("shell_start", {
       command: "echo clamped",
       scope: "session",
       inlineSettleMs: 99_999,
       triggerOnCompletion: false,
     });
-    assert.match(started, /inlineSettleMs 99999 clamped to 10000/);
-    assert.match(started, /Settled inside the 10\.0s inline window/);
-    assert.match(started, /--- tail ---[\s\S]*clamped/);
-    const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+    const startedText = (started.content as { text?: string }[]).map((block) => block.text ?? "").join("\n");
+    assert.match(startedText, /inlineSettleMs 99999 clamped to 10000/);
+    assert.match(startedText, /Settled inside the 10\.0s inline window/);
+    assert.match(startedText, /--- tail ---[\s\S]*clamped/);
+    // A caller that reads only structured content must see the clamp too.
+    assert.equal(
+      started.structuredContent.note,
+      "inlineSettleMs 99999 clamped to 10000; the command keeps its handle if it outlives that window.",
+    );
+    const id = startedText.match(/sh_[0-9a-f]{8}/)?.[0];
     assert.ok(id);
-    const awaited = await harness.callTool("shell_await", {
+    const awaited = await harness.callToolResult("shell_await", {
       ids: id,
       waitMs: 99_999,
       includeOutputPreview: false,
     });
-    assert.match(awaited, /waitMs 99999 clamped to 50000/);
-    assert.match(awaited, /exit 0/);
+    const awaitedText = (awaited.content as { text?: string }[]).map((block) => block.text ?? "").join("\n");
+    assert.match(awaitedText, /waitMs 99999 clamped to 50000/);
+    assert.match(awaitedText, /exit 0/);
+    assert.match(awaited.structuredContent.note, /waitMs 99999 clamped to 50000/);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("an expired wait carries its guidance in structured content", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const started = await harness.callTool("shell_start", {
+      command: "sleep 5",
+      scope: "session",
+      inlineSettleMs: 0,
+      triggerOnCompletion: false,
+    });
+    const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id);
+    const expired = await harness.callToolResult("shell_await", { ids: id, waitMs: 100 });
+    assert.equal(expired.structuredContent.timedOutWaiting, true);
+    assert.equal(expired.structuredContent.settled, false);
+    assert.match(expired.structuredContent.note, /The wait expired\. Nothing was killed\./);
+    await harness.callTool("shell_cancel", { ids: id, ladder: "force" });
   } finally {
     harness.dispose();
     if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;

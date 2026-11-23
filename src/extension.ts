@@ -23,6 +23,7 @@ import type {
   ShellCancelResult,
   ShellHandle,
   ShellSendResult,
+  ShellStartResult,
   ShellStatusResult,
 } from "./core/types.ts";
 
@@ -130,6 +131,7 @@ const awaitResultSchema = Type.Object({
   ),
   outcomes: Type.Array(handleSchema),
   stillRunning: Type.Array(handleSchema),
+  note: Type.Optional(Type.String()),
 });
 
 const readResultSchema = Type.Object({
@@ -175,6 +177,7 @@ const statusResultSchema = Type.Object({
 const startResultSchema = Type.Object({
   ...handleSchema.properties,
   settledInline: Type.Optional(Type.Boolean()),
+  note: Type.Optional(Type.String()),
 });
 
 // ------------------------------------------------------------------- utilities
@@ -762,6 +765,13 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
           /* the preview is a convenience, not the contract */
         }
       }
+      // The note travels in structured content too: a caller that reads only
+      // structuredContent would otherwise miss the clamp it has to know about.
+      const structured: ShellStartResult = {
+        ...reported,
+        ...(settled ? { settledInline: true } : {}),
+        note: inlineNote,
+      };
       return {
         content: [
           {
@@ -769,7 +779,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
             text: startText(reported, settled ? inlineSettleMs : undefined, preview, inlineNote),
           },
         ],
-        structuredContent: json(settled ? { ...settled, settledInline: true } : handle),
+        structuredContent: json(structured),
         details: { id: reported.id, settled: Boolean(settled) },
       };
     },
@@ -820,12 +830,21 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       } finally {
         releaseSettles(ids, consumed);
       }
+      // Both notes belong to structured content as well. A codemode caller
+      // reads structuredContent, and a clamp or an end-the-turn instruction
+      // that only exists in the prose never reaches it.
+      const clampNote =
+        requestedWaitMs > MAX_WAIT_MS
+          ? `waitMs ${requestedWaitMs} clamped to ${MAX_WAIT_MS}; a completion message still wakes you when the command settles.`
+          : undefined;
+      const timeoutNote = result.timedOutWaiting
+        ? waitMs >= MAX_WAIT_MS
+          ? "The full-length wait expired. Nothing was killed. End the turn; a completion message will wake you when the command settles. Do not issue another blocking await for the same work."
+          : "The wait expired. Nothing was killed. End the turn if the remaining work is long, or await again."
+        : undefined;
+      const note = [clampNote, timeoutNote].filter(Boolean).join(" ") || undefined;
       const lines: string[] = [];
-      if (requestedWaitMs > MAX_WAIT_MS) {
-        lines.push(
-          `waitMs ${requestedWaitMs} clamped to ${MAX_WAIT_MS}; a completion message still wakes you when the command settles.`,
-        );
-      }
+      if (clampNote) lines.push(clampNote);
       if (result.matched) {
         lines.push(`Pattern matched in ${result.matched.id}: ${result.matched.line}`);
       }
@@ -848,20 +867,10 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       for (const handle of result.stillRunning) {
         lines.push(`still running: ${describeHandle(handle)}`);
       }
-      if (result.timedOutWaiting) {
-        if (waitMs >= MAX_WAIT_MS) {
-          lines.push(
-            "The full-length wait expired. Nothing was killed. End the turn; a completion message will wake you when the command settles. Do not issue another blocking await for the same work.",
-          );
-        } else {
-          lines.push(
-            "The wait expired. Nothing was killed. End the turn if the remaining work is long, or await again.",
-          );
-        }
-      }
+      if (timeoutNote) lines.push(timeoutNote);
       return {
         content: [{ type: "text" as const, text: lines.join("\n") || "nothing to await" }],
-        structuredContent: json(result),
+        structuredContent: json(note ? { ...result, note } : result),
         details: { settled: result.settled },
       };
     },

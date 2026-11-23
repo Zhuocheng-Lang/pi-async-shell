@@ -164,6 +164,19 @@ export interface ShellAwaitResult {
   matched?: { id: string; line: string; byteOffset: number };
   outcomes: ShellHandle[];
   stillRunning: ShellHandle[];
+  /**
+   * Guidance the text result also carries: a clamped wait, or what to do after
+   * a wait that expired. A structured caller reads this field instead of the
+   * prose, so both surfaces say the same thing.
+   */
+  note?: string;
+}
+
+/** `shell_start` returns a handle, and reports a settle inline when it has one. */
+export interface ShellStartResult extends ShellHandle {
+  settledInline?: boolean;
+  /** Why the result differs from the request, such as a clamped inline window. */
+  note?: string;
 }
 
 export interface ShellReadRange {
