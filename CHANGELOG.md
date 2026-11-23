@@ -2,6 +2,12 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- The manifest declares `pi.image`, so the [Pi package gallery](https://pi.dev/packages/pi-async-shell) shows the project icon instead of the placeholder frame. `0.2.1` shipped `docs/assets/logo.png` but never pointed the manifest at it, and the gallery reads that field alone, so the icon stayed unsynced even though the file was public. `tests/manifest.test.ts` keeps the field on an absolute `https` URL and resolves a `raw.githubusercontent.com` preview back to a file in the checkout.
+
 ## [0.2.1] - 2026-11-22
 
 ### Added
