@@ -198,13 +198,14 @@ It moves a live `session` execution to `workspace` ownership. This is the operat
 ```ts
 interface ShellPromoteParams {
   id: string;
-  to: "session" | "workspace";
-  /** workspace only: set notifyOnCompletion on the promoted record. Omitted: leave the current value. */
+  /** `"workspace"` is the only move, and omitting `to` means it. */
+  to?: "workspace";
+  /** Set notifyOnCompletion on the promoted record. Omitted: leave the current value. */
   adopterNotification?: boolean;
 }
 ```
 
-Promotion is one-directional, and the runtime records it in the durable metadata. A settled execution is no longer eligible for promotion. `to: "workspace"` is the effective move. `to: "session"` is accepted only when the execution is already `session`. Narrowing a `workspace` execution is refused. The design offers no demotion, because narrowing ownership after the fact would require re-establishing invariants that the model exists to preserve. To stop a promoted execution, use `shell_cancel`.
+Promotion is one-directional, and the runtime records it in the durable metadata. A settled execution is no longer eligible for promotion. `to: "workspace"` is the move, and a call that omits `to` performs the same move. The design offers no demotion, because narrowing ownership after the fact would require re-establishing invariants that the model exists to preserve. The value `to: "session"` used to be accepted as a no-op on an execution that was already `session`; it named a direction promotion never had, and it is retired. The schema offers `"workspace"` alone, and a caller that still asks for `"session"` gets the reason instead of a silent success ([ADR 0006](../adr/0006-retire-session-promotion.md)). To stop a promoted execution, use `shell_cancel`.
 
 Promotion is lossless for both bindings. The execution keeps the same process, the same log files and the same pid. The runtime releases the fd 3 owner watch, writes a workspace link, and persists `scope: "workspace"` in the metadata. The runtime respawns nothing. No byte is lost at the transition.
 

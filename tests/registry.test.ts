@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fence, verifyGone } from "../src/core/containment.ts";
@@ -321,6 +321,62 @@ test("a request id makes shell_start replay-safe", async () => {
   }
 });
 
+test("two request keys that sanitize alike stay two executions", async () => {
+  const registry = makeRegistry(tempCwd());
+  try {
+    // Both keys reduce to "build_one". A shared record would return the first
+    // handle for the second call, so the command would never run while the tool
+    // reported success.
+    const first = await registry.start({ command: "echo AAA", request: "build one", scope: "session" });
+    const second = await registry.start({ command: "echo BBB", request: "build/one", scope: "session" });
+    assert.notEqual(second.id, first.id, "a lossy key must not answer for a different key");
+    await registry.awaitHandles({ ids: [first.id, second.id], waitMs: 5000 });
+    assert.equal((await registry.read({ id: second.id })).text, "BBB");
+  } finally {
+    await registry.shutdown("quit");
+  }
+});
+
+test("an await pattern is refused when it can backtrack catastrophically", async () => {
+  const registry = makeRegistry(tempCwd());
+  try {
+    const handle = await registry.start({ command: "echo ready; sleep 5", scope: "session" });
+    await assert.rejects(
+      () => registry.awaitHandles({ ids: handle.id, until: { kind: "pattern", regex: "(x+)+y" }, waitMs: 100 }),
+      /nested quantifiers/,
+    );
+  } finally {
+    await registry.shutdown("quit");
+  }
+});
+
+test("an unwritable record directory only reports a diagnostic", async () => {
+  const records: CompletionRecord[] = [];
+  const diagnostics: string[] = [];
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  const registry = makeRegistry(tempCwd(), {
+    onSettle: (_handle, record) => records.push(record),
+    onDiagnostic: (message) => diagnostics.push(message),
+  });
+  try {
+    const handle = await registry.start({ command: "sleep 60", scope: "session" });
+    // Disk pressure, a removed directory and a permission change all reach the
+    // same code: finalize writes records it can no longer write.
+    rmSync(handle.log.dir, { recursive: true, force: true });
+    writeFileSync(handle.log.dir, "");
+    await registry.cancel({ ids: handle.id, ladder: "force" });
+    assert.equal(records.length, 1, "the settle still reaches its channel");
+    await sleep(300);
+    assert.deepEqual(rejections, [], "an unwritable record must not surface as an unhandled rejection");
+    assert.match(diagnostics.join("\n"), /could not (seal|persist)/);
+  } finally {
+    process.off("unhandledRejection", onRejection);
+    await registry.shutdown("quit");
+  }
+});
+
 test("timeoutSeconds settles as timed-out through the ladder", async () => {
   const registry = makeRegistry(tempCwd());
   try {
@@ -338,6 +394,26 @@ test("timeoutSeconds settles as timed-out through the ladder", async () => {
         exit: JSON.parse(readFileSync(join(handle.log.dir, "exit.json"), "utf8")),
       }),
     );
+  } finally {
+    await registry.shutdown("quit");
+  }
+});
+
+test("promotion refuses the retired to: session direction", async () => {
+  const registry = makeRegistry(tempCwd());
+  try {
+    const handle = await registry.start({ command: "sleep 60", scope: "session" });
+    // The tool schema offers "workspace" alone, so only a programmatic caller
+    // can still ask for this. It must learn why, not receive a silent no-op.
+    await assert.rejects(
+      () => registry.promote({ id: handle.id, to: "session" }),
+      /one-directional: to must be "workspace"/,
+    );
+    const still = registry.status({ id: handle.id }).handles[0];
+    assert.equal(still?.scope, "session");
+    const promoted = await registry.promote({ id: handle.id });
+    assert.equal(promoted.scope, "workspace");
+    await registry.cancel({ ids: [handle.id], ladder: "force" });
   } finally {
     await registry.shutdown("quit");
   }
@@ -403,19 +479,6 @@ test("unknown handles are refused with a clear message", async () => {
   try {
     await assert.rejects(() => registry.read({ id: "sh_deadbeef" }), /unknown handle/);
     await assert.rejects(() => registry.start({ command: "   " }), /requires a command/);
-  } finally {
-    await registry.shutdown("quit");
-  }
-});
-
-test("an await pattern is refused when it can backtrack catastrophically", async () => {
-  const registry = makeRegistry(tempCwd());
-  try {
-    const handle = await registry.start({ command: "echo ready; sleep 5", scope: "session" });
-    await assert.rejects(
-      () => registry.awaitHandles({ ids: handle.id, until: { kind: "pattern", regex: "(x+)+y" }, waitMs: 100 }),
-      /nested quantifiers/,
-    );
   } finally {
     await registry.shutdown("quit");
   }

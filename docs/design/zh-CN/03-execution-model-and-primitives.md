@@ -198,13 +198,14 @@ interface ShellReadResult {
 ```ts
 interface ShellPromoteParams {
   id: string;
-  to: "session" | "workspace";
-  /** 仅 workspace：设置提升后记录的 notifyOnCompletion。省略：保持当前值。 */
+  /** `"workspace"` 是唯一的方向，省略 `to` 也表示它。 */
+  to?: "workspace";
+  /** 设置提升后记录的 notifyOnCompletion。省略：保持当前值。 */
   adopterNotification?: boolean;
 }
 ```
 
-提升是单向的，运行时把它记录在持久元数据中。已落定的执行不再可提升。`to: "workspace"` 是有效移动。执行已经是 `session` 时，才接受 `to: "session"`。收窄 `workspace` 执行会被拒绝。设计不提供降级，因为事后收窄所有权需要重建模型要维护的不变量。要停止已提升的执行，使用 `shell_cancel`。
+提升是单向的，运行时把它记录在持久元数据中。已落定的执行不再可提升。`to: "workspace"` 是这次移动，省略 `to` 的调用执行同一次移动。设计不提供降级，因为事后收窄所有权需要重建模型要维护的不变量。`to: "session"` 曾经对已经是 `session` 的执行被当作无操作接受；它命名了一个提升从未有过的方向，现已退役。schema 只提供 `"workspace"`，仍请求 `"session"` 的调用方会得到原因，而不是静默成功（[ADR 0006](../../adr/0006-retire-session-promotion.md)）。要停止已提升的执行，使用 `shell_cancel`。
 
 提升对两种绑定都无损。执行保留同一个进程、同一批日志文件与同一个 pid。运行时释放 fd 3 所有者监视，写入工作区链接，并在元数据中持久化 `scope: "workspace"`。运行时不重启任何东西。转换时不会丢字节。
 

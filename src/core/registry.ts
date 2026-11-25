@@ -3,7 +3,7 @@
 
 import type { ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -36,6 +36,7 @@ import {
   type ProcessGroupRef,
 } from "./identity.ts";
 import {
+  completeUtf8Length,
   DEFAULT_MAX_LOG_BYTES,
   MAX_READ_BYTES,
   MAX_READ_LINES,
@@ -89,6 +90,8 @@ export const DEFAULT_WAIT_MS = 30_000;
 export const MAX_WAIT_MS = 50_000;
 const GC_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_GRACE_MS = 3_000;
+/** A grace period bounds a wait, so it gets the same treatment as every other one. */
+export const MAX_GRACE_MS = 30_000;
 const MAX_ADOPT_ATTEMPTS = 5;
 
 export interface RegistryOptions {
@@ -117,7 +120,6 @@ interface Execution {
   timeoutTimer?: NodeJS.Timeout;
   exitWatcher?: FSWatcher;
   exitPoll?: NodeJS.Timeout;
-  logPoll?: NodeJS.Timeout;
   /** The control pipe whose EOF tells a supervisor that its owner is gone. */
   owner?: Writable;
 }
@@ -173,7 +175,11 @@ function readDeltaSync(path: string, offset: number): { text: string; nextOffset
       const length = Math.min(size - offset, 256 * 1024);
       const buffer = Buffer.allocUnsafe(length);
       const read = readSync(fd, buffer, 0, length, offset);
-      return { text: buffer.subarray(0, read).toString("utf8"), nextOffset: offset + read };
+      // The next call resumes where this one stopped, so a character split by the
+      // window would be lost for good. Stop on a character boundary instead, and
+      // let the following poll pick up the rest.
+      const usable = completeUtf8Length(buffer.subarray(0, read));
+      return { text: buffer.subarray(0, usable).toString("utf8"), nextOffset: offset + usable };
     } finally {
       closeSync(fd);
     }
@@ -188,27 +194,57 @@ const KEY_BYTES: Record<string, string> = {
   tab: "\t",
   escape: "\u001b",
   esc: "\u001b",
-  space: " ",
   backspace: "\u007f",
+  space: " ",
+  delete: "\u001b[3~",
+  insert: "\u001b[2~",
   up: "\u001b[A",
   down: "\u001b[B",
   right: "\u001b[C",
   left: "\u001b[D",
   home: "\u001b[H",
   end: "\u001b[F",
-  "ctrl c": "\u0003",
-  "ctrl d": "\u0004",
-  "ctrl z": "\u001a",
-  "ctrl l": "\u000c",
-  "ctrl a": "\u0001",
-  "ctrl e": "\u0005",
+  pageup: "\u001b[5~",
+  pagedown: "\u001b[6~",
+  f1: "\u001bOP",
+  f2: "\u001bOQ",
+  f3: "\u001bOR",
+  f4: "\u001bOS",
+  f5: "\u001b[15~",
+  f6: "\u001b[17~",
+  f7: "\u001b[18~",
+  f8: "\u001b[19~",
+  f9: "\u001b[20~",
+  f10: "\u001b[21~",
+  f11: "\u001b[23~",
+  f12: "\u001b[24~",
 };
 
+/** `Ctrl+C`, `ctrl c`, `ctrl-c` and `CTRL+C` are one key, not four. */
+function normalizeKeyName(key: string): string {
+  return key.trim().toLowerCase().replace(/[\s+_-]+/g, "");
+}
+
+/**
+ * Turn a key name into the bytes a terminal would have sent.
+ *
+ * A name nobody recognizes throws. Writing the name as literal text instead
+ * reports `wrote: true`, so a typo in a key chord looks like a delivered
+ * keystroke that the program simply ignored, and the caller debugs the program.
+ */
 export function keyToBytes(key: string): string {
-  const normalized = key.trim().toLowerCase();
-  if (KEY_BYTES[normalized]) return KEY_BYTES[normalized];
-  if (normalized.length === 1) return key;
-  return key;
+  if (key.length === 1) return key; // a single character is itself
+  const name = normalizeKeyName(key);
+  const named = KEY_BYTES[name];
+  if (named !== undefined) return named;
+  const control = /^ctrl([a-z])$/.exec(name);
+  if (control) return String.fromCharCode((control[1] as string).charCodeAt(0) - 96);
+  throw new Error(
+    `shell_send does not know the key "${key}". Send literal input as text, or use one of: ${[
+      ...Object.keys(KEY_BYTES),
+      "Ctrl+<letter>",
+    ].join(", ")}.`,
+  );
 }
 
 export class ShellRegistry {
@@ -250,7 +286,7 @@ export class ShellRegistry {
         protectedIds: new Set([...this.executions.keys()]),
       });
     } catch (error) {
-      this.options.onDiagnostic?.("registry GC failed: " + (error as Error).message);
+      this.options.onDiagnostic?.(`registry GC failed: ${(error as Error).message}`);
     }
   }
 
@@ -406,10 +442,9 @@ export class ShellRegistry {
     }
     exec.meta.identity = exec.identity;
     spawned.child.on("error", (error) => {
-      void this.finalize(exec, "failed", { error: error.message });
+      this.finalizeLater(exec, "failed", { error: error.message });
     });
     this.watchExitRecord(exec);
-    this.startLogPoll(exec, 250);
   }
 
   /**
@@ -437,6 +472,7 @@ export class ShellRegistry {
       shell: this.shell.shell,
       dir,
       combinedPath: exec.handle.log.combined,
+      maxLogBytes: this.maxLogBytes,
     };
     const spawned = spawnPty(ctx, { watch: !durable });
     exec.child = spawned.child;
@@ -448,12 +484,11 @@ export class ShellRegistry {
       exec.handle.pgid = exec.identity?.pgid;
     }
     spawned.child.on("error", (error) => {
-      void this.finalize(exec, "failed", { error: error.message });
+      this.finalizeLater(exec, "failed", { error: error.message });
     });
     // The bytes land in the file, not in a pipe we hold, so there is no data
     // event to subscribe to. The exit record is the durable half of completion.
     this.watchExitRecord(exec);
-    this.startLogPoll(exec, 250);
   }
 
   private observeReady(exec: Execution): void {
@@ -497,6 +532,27 @@ export class ShellRegistry {
 
   // ----------------------------------------------------------------- finalize
 
+  /**
+   * Finalize from a callback that cannot await, without leaking a rejection.
+   *
+   * `finalize` writes durable records, and a write can fail — a full disk, a
+   * record directory removed from under it, a permission change. An unhandled
+   * rejection from here reaches the host process and takes every other
+   * execution down with it, so the failure is reported and the run continues.
+   */
+  private finalizeLater(
+    exec: Execution,
+    status: ShellStatus,
+    detail: { exitCode?: number | null; signal?: string | null; error?: string } = {},
+  ): void {
+    void this.finalize(exec, status, detail).catch((error: unknown) => {
+      this.options.onDiagnostic?.(
+        `could not seal ${exec.handle.id}: ${(error as Error).message}`,
+        exec.handle,
+      );
+    });
+  }
+
   private async finalize(
     exec: Execution,
     status: ShellStatus,
@@ -507,7 +563,6 @@ export class ShellRegistry {
     if (exec.timeoutTimer) clearTimeout(exec.timeoutTimer);
     exec.exitWatcher?.close();
     if (exec.exitPoll) clearInterval(exec.exitPoll);
-    if (exec.logPoll) clearInterval(exec.logPoll);
     // Closing the owner pipe tells either supervisor that its owner is gone.
     exec.owner?.end();
     exec.owner = undefined;
@@ -565,7 +620,16 @@ export class ShellRegistry {
       /* ignore */
     }
 
-    await this.persist(exec);
+    try {
+      await this.persist(exec);
+    } catch (error) {
+      // The completion record is already on disk, so the outcome is durable even
+      // when the metadata update is not. Losing the update is not worth a crash.
+      this.options.onDiagnostic?.(
+        `could not persist ${exec.handle.id}: ${(error as Error).message}`,
+        exec.handle,
+      );
+    }
     this.options.onSettle?.({ ...exec.handle }, record);
     this.emit();
   }
@@ -599,6 +663,7 @@ export class ShellRegistry {
     const waitMs = Math.max(0, Math.min(MAX_WAIT_MS, params.waitMs ?? DEFAULT_WAIT_MS));
     const includePreview = params.includeOutputPreview !== false;
 
+    let streamNote: string | undefined;
     const satisfied = new Map<string, { line?: string; byteOffset?: number }>();
     const patternState = new Map<
       string,
@@ -608,7 +673,9 @@ export class ShellRegistry {
     if (until.kind === "pattern") {
       for (const exec of execs) {
         const regex = compilePattern(until.regex, "shell_await pattern");
-        const stream = until.stream ?? "combined";
+        const normalized = this.normalizeStream(exec.handle, until.stream ?? "combined");
+        streamNote = streamNote ?? normalized.note;
+        const stream = normalized.stream;
         const path = this.streamPath(exec, stream);
         let offset = 0;
         if (until.since === "now") offset = sizeOf(path);
@@ -714,6 +781,7 @@ export class ShellRegistry {
           matched,
           outcomes,
           stillRunning,
+          ...(streamNote ? { note: streamNote } : {}),
         });
       };
 
@@ -789,8 +857,12 @@ export class ShellRegistry {
       stream = "combined";
       note = "this binding has no terminal view; returning combined";
     }
-    if (handle.binding !== "pipe" && stream === "stderr" && sizeOf(handle.log.stderr) === 0) {
-      note = "stderr is merged into the PTY stream for this binding";
+    const normalized = this.normalizeStream(handle, stream);
+    if (normalized.note) {
+      // Read and await have to agree. An empty stderr file on a pty is a fact
+      // about the binding, not an empty stream, so both name it as one stream.
+      stream = normalized.stream;
+      note = normalized.note;
     }
     if (handle.scope === "workspace" && handle.binding === "pipe" && (stream === "stdout" || stream === "stderr")) {
       const own = sizeOf(stream === "stdout" ? handle.log.stdout : handle.log.stderr);
@@ -819,6 +891,28 @@ export class ShellRegistry {
 
   private streamPath(exec: Execution, stream: string): string {
     return this.streamPathFromHandle(exec.handle, stream);
+  }
+
+  /**
+   * Map a requested stream onto one this binding records.
+   *
+   * A terminal binding is one stream: `script(1)` writes everything the program
+   * printed, stderr included, into the recording, and `stderr.log` stays empty. A
+   * read of it returns nothing and a pattern wait spends its whole budget on a
+   * file that can never grow, both without saying why. Reads and waits share this
+   * mapping, so the two answers agree instead of one silently timing out.
+   */
+  private normalizeStream(
+    handle: ShellHandle,
+    stream: StreamName | "ptyView",
+  ): { stream: StreamName | "ptyView"; note?: string } {
+    if (handle.binding !== "pipe" && stream === "stderr") {
+      return {
+        stream: "combined",
+        note: "this binding has no separate stderr; stderr is merged into combined",
+      };
+    }
+    return { stream };
   }
 
   private streamPathFromHandle(handle: ShellHandle, stream: string): string {
@@ -860,9 +954,12 @@ export class ShellRegistry {
       }
       exec.cancelRequested = true;
       const ladder = params.ladder ?? "graceful";
+      // Every other wait in this runtime is clamped; a grace period that could be
+      // an hour is a hang with a supported spelling.
+      const graceMs = Math.max(0, Math.min(MAX_GRACE_MS, params.graceMs ?? DEFAULT_GRACE_MS));
       if (ladder === "graceful") {
         await this.graceful(exec);
-        const settled = await this.waitForSettle(exec, params.graceMs ?? DEFAULT_GRACE_MS);
+        const settled = await this.waitForSettle(exec, graceMs);
         if (!settled) await this.forceKill(exec);
       } else {
         await this.forceKill(exec);
@@ -940,15 +1037,13 @@ export class ShellRegistry {
   async promote(params: ShellPromoteParams): Promise<ShellHandle> {
     const exec = this.requireExecution(params.id);
     if (isTerminal(exec.handle.status)) throw new Error("cannot promote a settled execution");
+    // `to: "session"` named a direction promotion never had. The tool schema
+    // offers `"workspace"` alone; a caller that reaches the registry directly
+    // gets the reason rather than a silent no-op (ADR 0006).
     if (params.to === "session") {
-      if (exec.handle.scope === "workspace") {
-        throw new Error("promotion is one-directional: a workspace execution cannot narrow to session");
-      }
-      exec.handle.scope = "session";
-      exec.meta.scope = "session";
-      await this.persist(exec);
-      this.emit();
-      return { ...exec.handle };
+      throw new Error(
+        "promotion is one-directional: to must be \"workspace\". A session execution is already at the narrow scope, and a workspace execution cannot narrow.",
+      );
     }
 
     if (exec.handle.scope === "workspace") return { ...exec.handle };
@@ -1004,7 +1099,7 @@ export class ShellRegistry {
     }
     if (isTerminal(exec.handle.status)) throw new Error("execution has settled");
     if (params.request) {
-      const replay = this.readRequestRecord(params.request);
+      const replay = this.readRequestRecord(params.request, "send");
       if (replay) {
         // A second answer is a second keystroke. Return the first result instead.
         return { id: exec.handle.id, wrote: false };
@@ -1151,9 +1246,7 @@ export class ShellRegistry {
         join(dir, "exit.json"),
       );
       if (exit) {
-        const status: ShellStatus =
-          exit.status ??
-          (exit.exitCode === 0 ? "completed" : exit.exitCode === null ? "lost" : "failed");
+        const status: ShellStatus = exit.status ?? statusFromExitRecord(exit.exitCode ?? null);
         const exec = this.restoreExecution(handle, meta, dir);
         await this.finalize(exec, status, { exitCode: exit.exitCode ?? null });
         finalized.push(handle.id);
@@ -1190,7 +1283,6 @@ export class ShellRegistry {
       exec.meta.status = "running";
       await this.persist(exec);
       this.watchExitRecord(exec);
-      this.startLogPoll(exec, 500);
       adopted.push(handle.id);
     }
     if (adopted.length > 0 || lost.length > 0 || finalized.length > 0) this.emit();
@@ -1225,6 +1317,15 @@ export class ShellRegistry {
     }
   }
 
+  /**
+   * Poll the durable half of an execution.
+   *
+   * A file-backed binding has no data event: the bytes reach the log without
+   * passing through this process. This one timer therefore does both jobs — it
+   * keeps the byte counts, the readiness milestone and the UI in step with a file
+   * only the child is writing, and it notices the exit record. A second timer at
+   * the same interval repeated the first half of that work for nothing.
+   */
   private watchExitRecord(exec: Execution): void {
     const exitPath = join(exec.handle.log.dir, "exit.json");
     const pidPath = join(exec.handle.log.dir, "pid.json");
@@ -1257,7 +1358,7 @@ export class ShellRegistry {
           return;
         }
         const status = exit.status ?? this.statusForExit(exec, exit.exitCode ?? null, exit.signal ?? null);
-        void this.finalize(exec, status, {
+        this.finalizeLater(exec, status, {
           exitCode: exit.exitCode ?? null,
           signal: exit.signal ?? null,
           error: exit.error,
@@ -1277,21 +1378,6 @@ export class ShellRegistry {
     check();
   }
 
-  /**
-   * A file-backed binding has no data event: the bytes reach the file without
-   * passing through this process. The poll is what keeps the byte counts, the
-   * readiness ring and the UI in step with a file only the child is writing.
-   */
-  private startLogPoll(exec: Execution, intervalMs: number): void {
-    exec.logPoll = setInterval(() => {
-      if (exec.finalized) return;
-      this.refreshBytesFromFiles(exec);
-      this.observeReady(exec);
-      this.emit();
-    }, intervalMs);
-    exec.logPoll.unref?.();
-  }
-
   // ----------------------------------------------------------------- shutdown
 
   async shutdown(reason: "quit" | "reload" | "new" | "resume" | "fork"): Promise<void> {
@@ -1307,7 +1393,6 @@ export class ShellRegistry {
     for (const exec of this.executions.values()) {
       exec.exitWatcher?.close();
       if (exec.exitPoll) clearInterval(exec.exitPoll);
-      if (exec.logPoll) clearInterval(exec.logPoll);
       if (exec.timeoutTimer) clearTimeout(exec.timeoutTimer);
     }
     if (this.gcTimer) clearInterval(this.gcTimer);
@@ -1354,20 +1439,36 @@ export class ShellRegistry {
     return undefined;
   }
 
-  private readRequestRecord(request: string): { id: string; kind?: string } | undefined {
-    return readJson<{ id: string; kind?: string }>(
-      join(this.paths.requestsDir, `${sanitizeRequest(request)}.json`),
+  /**
+   * Resolve a replay key to the record that answered it.
+   *
+   * The record has to match on two axes, not just on its file name. `request` is
+   * the caller's own key, so a record written under a colliding name is refused
+   * rather than replayed. `kind` keeps `shell_start` and `shell_send` in separate
+   * namespaces: one request key used by both tools would otherwise let a start
+   * replay answer with an id that was minted for a keystroke.
+   */
+  private readRequestRecord(
+    request: string,
+    kind: "start" | "send",
+  ): { id: string; kind?: string } | undefined {
+    const record = readJson<{ id: string; request?: string; kind?: string }>(
+      join(this.paths.requestsDir, requestFileName(request, kind)),
     );
+    if (!record?.id) return undefined;
+    if (record.request !== undefined && record.request !== request) return undefined;
+    if ((record.kind ?? "start") !== kind) return undefined;
+    return record;
   }
 
   private findRequest(request: string): ShellHandle | undefined {
-    const record = this.readRequestRecord(request);
+    const record = this.readRequestRecord(request, "start");
     if (!record) return undefined;
     return this.get(record.id);
   }
 
   private writeRequestRecord(request: string, id: string, kind: "start" | "send" = "start"): void {
-    const path = join(this.paths.requestsDir, `${sanitizeRequest(request)}.json`);
+    const path = join(this.paths.requestsDir, requestFileName(request, kind));
     if (existsSync(path)) return; // no-replace publication
     try {
       writeJsonAtomicSync(path, { id, request, kind, createdAt: now() });
@@ -1425,9 +1526,34 @@ function sanitizeRequest(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 96);
 }
 
+/**
+ * Name the file that answers a replay key.
+ *
+ * Two problems share one file name, so it answers both. The sanitized form is
+ * lossy: `"build one"` and `"build/one"` both become `build_one`, so the second
+ * start would find the first one's record, return its handle, and never run its
+ * command while reporting success. A key the sanitizer changed therefore carries
+ * a digest of the exact string the caller passed. The kind is in the name too,
+ * because one request key used by both `shell_start` and `shell_send` would
+ * otherwise let a start replay answer with the id minted for a keystroke.
+ */
+function requestFileName(request: string, kind: "start" | "send"): string {
+  const safe = sanitizeRequest(request);
+  const digest =
+    safe === request ? "" : `.${createHash("sha256").update(request).digest("hex").slice(0, 12)}`;
+  return `${safe}${digest}.${kind}.json`;
+}
+
 function defaultName(command: string): string {
   const first = command.trim().split(/\s+/).slice(0, 3).join(" ");
   return first.length > 40 ? `${first.slice(0, 37)}...` : first;
+}
+
+/** A sealed exit record names an outcome even when no process classifies it. */
+function statusFromExitRecord(exitCode: number | null): ShellStatus {
+  if (exitCode === 0) return "completed";
+  if (exitCode === null) return "lost";
+  return "failed";
 }
 
 function metaToHandle(meta: ShellMeta): ShellHandle {

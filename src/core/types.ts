@@ -87,7 +87,14 @@ export interface ShellReadParams {
 
 export interface ShellPromoteParams {
   id: string;
-  to: "session" | "workspace";
+  /**
+   * The move to make. Only `"workspace"` exists, and omitting it means the same
+   * thing: promotion widens ownership and never narrows it. `"session"` is a
+   * retired value — the tool schema no longer offers it and the registry refuses
+   * it with its reason, so a caller that still passes it learns why instead of
+   * receiving a silent no-op. See docs/adr/0006-retire-session-promotion.md.
+   */
+  to?: Scope;
   adopterNotification?: boolean;
 }
 
