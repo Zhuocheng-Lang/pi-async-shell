@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Zhuocheng-Lang
+// SPDX-License-Identifier: MPL-2.0
+
 import { spawn } from "node:child_process";
 import {
   createReadStream,
