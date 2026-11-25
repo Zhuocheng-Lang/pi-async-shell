@@ -8,9 +8,9 @@
  * messaging; it produces events, and this file decides whether an event becomes a
  * follow-up message, a TUI notification, or nothing at all.
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import { StringEnum, type JsonObject } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { Type, type TUnsafe } from "typebox";
 import { realpathSync } from "node:fs";
 import { assertLinux } from "./core/identity.ts";
 import { DEFAULT_WAIT_MS, MAX_WAIT_MS, ShellRegistry } from "./core/registry.ts";
@@ -69,10 +69,25 @@ const state: ExtensionState = {
 
 // --------------------------------------------------------------------- schemas
 
-const scopeEnum = StringEnum(["session", "workspace"] as const);
-const bindingEnum = StringEnum(["pipe", "pty"] as const);
-const deliveryEnum = StringEnum(["steer", "settle"] as const);
-const statusEnum = StringEnum([
+/**
+ * `StringEnum` builds the `{ type: "string", enum: [...] }` shape that every
+ * provider accepts, but the object it returns carries no TypeBox `~kind`
+ * brand, so TypeBox's `Static` reads it as `unknown` and every enum parameter
+ * arrives in a handler untyped. `Type.Unsafe` adds the static type as a hidden
+ * property, so the JSON that reaches the model is byte-identical while the
+ * handler sees the literal union.
+ */
+function stringEnum<T extends readonly string[]>(
+  values: T,
+  options?: { description?: string; default?: T[number] },
+): TUnsafe<T[number]> {
+  return Type.Unsafe<T[number]>(StringEnum(values, options));
+}
+
+const scopeEnum = stringEnum(["session", "workspace"] as const);
+const bindingEnum = stringEnum(["pipe", "pty"] as const);
+const deliveryEnum = stringEnum(["steer", "settle"] as const);
+const statusEnum = stringEnum([
   "starting",
   "running",
   "completed",
@@ -81,7 +96,7 @@ const statusEnum = StringEnum([
   "timed-out",
   "lost",
 ] as const);
-const streamEnum = StringEnum(["combined", "stdout", "stderr", "ptyView"] as const);
+const streamEnum = stringEnum(["combined", "stdout", "stderr", "ptyView"] as const);
 
 const logSchema = Type.Object({
   dir: Type.String(),
@@ -116,7 +131,7 @@ const handleSchema = Type.Object({
   log: logSchema,
   bytes: bytesSchema,
   error: Type.Optional(Type.String()),
-  exitSource: Type.Optional(StringEnum(["pipefail", "last-command"] as const)),
+  exitSource: Type.Optional(stringEnum(["pipefail", "last-command"] as const)),
   consumedByAwait: Type.Optional(Type.Boolean()),
   notifyOnCompletion: Type.Optional(Type.Boolean()),
   delivery: Type.Optional(deliveryEnum),
@@ -694,7 +709,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
 
   pi.on("agent_before_settle", async (event) => {
     state.busy = false;
-    const entries: unknown[] = [];
+    const entries: SessionBoundaryDraft[] = [];
     let continueTurn = false;
 
     if (state.pending.length > 0) {
@@ -710,7 +725,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     }
 
     if (entries.length === 0) return undefined;
-    return { entries: [...event.entries, ...entries], continue: continueTurn } as never;
+    return { entries: [...event.entries, ...entries], continue: continueTurn };
   });
 
   pi.on("agent_settled", async () => {
@@ -730,15 +745,43 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to run" }),
       name: Type.Optional(Type.String({ description: "2-6 word label for the dock and the handle list" })),
-      cwd: Type.Optional(Type.String()),
-      env: Type.Optional(Type.Record(Type.String(), Type.String())),
+      cwd: Type.Optional(
+        Type.String({ description: "Working directory. Default: the Pi session's cwd." }),
+      ),
+      env: Type.Optional(
+        Type.Record(Type.String(), Type.String(), {
+          description:
+            "Extra environment values. An explicit value also restores a credential the default filter removed.",
+        }),
+      ),
       scope: Type.Optional(scopeEnum),
       binding: Type.Optional(bindingEnum),
-      timeoutSeconds: Type.Optional(Type.Number()),
-      notifyOnCompletion: Type.Optional(Type.Boolean()),
-      triggerOnCompletion: Type.Optional(Type.Boolean()),
+      timeoutSeconds: Type.Optional(
+        Type.Number({
+          minimum: 0,
+          description:
+            "Cancel through the graceful ladder after this many seconds. The outcome is timed-out, not failed.",
+        }),
+      ),
+      notifyOnCompletion: Type.Optional(
+        Type.Boolean({
+          description:
+            "Deliver a completion message when the execution settles. Default true for session scope, false for workspace scope.",
+        }),
+      ),
+      triggerOnCompletion: Type.Optional(
+        Type.Boolean({
+          description:
+            "Let a completion message resume an idle turn. Default true; false reports without waking the agent.",
+        }),
+      ),
       delivery: Type.Optional(deliveryEnum),
-      request: Type.Optional(Type.String()),
+      request: Type.Optional(
+        Type.String({
+          description:
+            "Replay key for this call. A second shell_start with the same key returns the first handle and runs nothing. Recognized characters: letters, digits, dot, dash, underscore.",
+        }),
+      ),
       inlineSettleMs: Type.Optional(
         Type.Number({
           minimum: 0,
@@ -755,7 +798,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
         requestedInlineSettleMs > MAX_INLINE_SETTLE_MS
           ? `inlineSettleMs ${requestedInlineSettleMs} clamped to ${MAX_INLINE_SETTLE_MS}; the command keeps its handle if it outlives that window.`
           : undefined;
-      const handle = await registry.start(params as never);
+      const handle = await registry.start(params);
       const settled = await holdForSettle(registry, handle, inlineSettleMs, signal);
       const reported = settled ?? handle;
       let preview: string | undefined;
@@ -794,24 +837,41 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       "Wait for exit, $PI_ASYNC_SHELL_EXEC_DIR/ready, or an output regex. Timeout never cancels. waitMs defaults to 30000 and is clamped to 50000 rather than rejected; values above the cap leave a note in the result. In codemode, end the turn after a full-length wait and rely on completion delivery.",
     promptGuidelines,
     parameters: Type.Object({
-      ids: Type.Union([Type.String(), Type.Array(Type.String())]),
-      mode: Type.Optional(StringEnum(["all", "any"] as const)),
+      ids: Type.Union([Type.String(), Type.Array(Type.String())], {
+        description: "One handle id, or a list of them.",
+      }),
+      mode: Type.Optional(
+        stringEnum(["all", "any"] as const, {
+          description: "all waits for every id; any returns when the first one satisfies until.",
+        }),
+      ),
       until: Type.Optional(
-        Type.Union([
-          Type.Object({ kind: Type.Literal("exit") }),
-          Type.Object({ kind: Type.Literal("ready") }),
-          Type.Object({
-            kind: Type.Literal("pattern"),
-            regex: Type.String(),
-            stream: Type.Optional(StringEnum(["combined", "stdout", "stderr", "ptyView"] as const)),
-            since: Type.Optional(Type.Union([Type.Number(), Type.Literal("now")])),
-          }),
-        ]),
+        Type.Union(
+          [
+            Type.Object({ kind: Type.Literal("exit") }),
+            Type.Object({ kind: Type.Literal("ready") }),
+            Type.Object({
+              kind: Type.Literal("pattern"),
+              regex: Type.String({
+                description:
+                  "JavaScript regular expression. Length and nested quantifiers are limited, because the match runs on the main thread.",
+              }),
+              stream: Type.Optional(streamEnum),
+              since: Type.Optional(Type.Union([Type.Number(), Type.Literal("now")])),
+            }),
+          ],
+          {
+            description:
+              "What ends the wait. exit (default) waits for settlement; ready waits for the $PI_ASYNC_SHELL_EXEC_DIR/ready marker, which does not end the execution; pattern waits for a line of output. A pty records one stream, so stderr reads and waits as combined.",
+          },
+        ),
       ),
       waitMs: Type.Optional(
         Type.Number({ minimum: 0, description: "Default 30000; values above 50000 are clamped, not rejected" }),
       ),
-      includeOutputPreview: Type.Optional(Type.Boolean()),
+      includeOutputPreview: Type.Optional(
+        Type.Boolean({ description: "Include the last 20 lines of each settled handle. Default true." }),
+      ),
     }),
     outputSchema: awaitResultSchema,
     async execute(_toolCallId, params, signal) {
@@ -825,7 +885,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       claimSettles(ids);
       let result: ShellAwaitResult;
       try {
-        result = await registry.awaitHandles({ ...params, waitMs } as never, signal);
+        result = await registry.awaitHandles({ ...params, waitMs }, signal);
         // An aborted call may never reach the model, so its outcome is not a
         // delivery: the completion channel still has to report the run.
         if (!signal?.aborted) consumeSettles(result.outcomes, consumed);
@@ -844,7 +904,9 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
           ? "The full-length wait expired. Nothing was killed. End the turn; a completion message will wake you when the command settles. Do not issue another blocking await for the same work."
           : "The wait expired. Nothing was killed. End the turn if the remaining work is long, or await again."
         : undefined;
-      const note = [clampNote, timeoutNote].filter(Boolean).join(" ") || undefined;
+      // The registry's own note says why a stream was remapped, and belongs with
+      // the guidance this call already carries.
+      const note = [result.note, clampNote, timeoutNote].filter(Boolean).join(" ") || undefined;
       const lines: string[] = [];
       if (clampNote) lines.push(clampNote);
       if (result.matched) {
@@ -885,21 +947,43 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       "Read a bounded slice of an execution's durable output. Streams: combined, stdout, stderr, ptyView. Modes: tail, head, offset, grep, all (a bounded head read with paging guidance in the note). Hard cap: 2000 lines or 50 KiB per call. ptyView is the rendered terminal screen (a viewport, not a scrollback); combined is the byte stream.",
     promptGuidelines,
     parameters: Type.Object({
-      id: Type.String(),
+      id: Type.String({ description: "Handle id." }),
       stream: Type.Optional(streamEnum),
-      mode: Type.Optional(StringEnum(["tail", "head", "offset", "grep", "all"] as const)),
-      lines: Type.Optional(Type.Number()),
-      maxBytes: Type.Optional(Type.Number()),
-      lineOffset: Type.Optional(Type.Number()),
-      byteOffset: Type.Optional(Type.Number()),
-      pattern: Type.Optional(Type.String()),
-      context: Type.Optional(Type.Number()),
-      stripAnsi: Type.Optional(Type.Boolean()),
+      mode: Type.Optional(
+        stringEnum(["tail", "head", "offset", "grep", "all"] as const, {
+          description:
+            "tail is the default. offset pages from lineOffset or byteOffset, grep filters by pattern, and all is a bounded head read that names its next page.",
+        }),
+      ),
+      lines: Type.Optional(
+        Type.Number({ minimum: 1, maximum: 2000, description: "Lines to return. Default 200, capped at 2000." }),
+      ),
+      maxBytes: Type.Optional(
+        Type.Number({ minimum: 64, maximum: 51200, description: "Byte budget for the result. Default 16 KiB, capped at 50 KiB." }),
+      ),
+      lineOffset: Type.Optional(
+        Type.Number({ minimum: 1, description: "With mode offset: the 1-based line to start from." }),
+      ),
+      byteOffset: Type.Optional(
+        Type.Number({ minimum: 0, description: "With mode offset: the byte to start from. Wins over lineOffset." }),
+      ),
+      pattern: Type.Optional(
+        Type.String({
+          description:
+            "With mode grep: a JavaScript regular expression. Length and nested quantifiers are limited, because the match runs on the main thread.",
+        }),
+      ),
+      context: Type.Optional(
+        Type.Number({ minimum: 0, maximum: 20, description: "With mode grep: lines of context around each match. Default 2." }),
+      ),
+      stripAnsi: Type.Optional(
+        Type.Boolean({ description: "Remove escape sequences from the returned text. Default true." }),
+      ),
     }),
     outputSchema: readResultSchema,
     async execute(_toolCallId, params, signal) {
       const registry = requireRegistry();
-      const result = await registry.read(params as never, signal);
+      const result = await registry.read(params, signal);
       const header = `${result.id} ${result.stream} · ${result.status} · ${result.totalLines} lines / ${formatBytes(result.totalBytes)}${
         result.truncated ? " · truncated" : ""
       }`;
@@ -924,14 +1008,21 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       "Move a live execution to a wider supervision scope. This is the honest name for backgrounding. Promotion is one-directional and audited.",
     promptGuidelines,
     parameters: Type.Object({
-      id: Type.String(),
-      to: StringEnum(["session", "workspace"] as const),
-      adopterNotification: Type.Optional(Type.Boolean()),
+      id: Type.String({ description: "Handle id of a live execution." }),
+      to: Type.Optional(
+        stringEnum(["workspace"] as const, {
+          description:
+            "Omit it. Promotion widens ownership to workspace, and no other value exists: a session execution is already narrow, and narrowing a workspace execution is refused.",
+        }),
+      ),
+      adopterNotification: Type.Optional(
+        Type.Boolean({ description: "Set notifyOnCompletion on the promoted handle." }),
+      ),
     }),
     outputSchema: handleSchema,
     async execute(_toolCallId, params) {
       const registry = requireRegistry();
-      const handle = await registry.promote(params as never);
+      const handle = await registry.promote(params);
       return {
         content: [{ type: "text" as const, text: `Promoted ${describeHandle(handle)}` }],
         structuredContent: json(handle),
@@ -947,11 +1038,27 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       "Write stdin text or key chords into a pty execution. Refuses on pipe, because a pipe has no terminal. The write goes to the execution's stdin FIFO, so it works from a later Pi process too.",
     promptGuidelines,
     parameters: Type.Object({
-      id: Type.String(),
-      text: Type.Optional(Type.String()),
-      keys: Type.Optional(Type.Array(Type.String())),
-      settleMs: Type.Optional(Type.Number()),
-      request: Type.Optional(Type.String()),
+      id: Type.String({ description: "Handle id of a pty execution." }),
+      text: Type.Optional(Type.String({ description: "Literal input, written as given." })),
+      keys: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Key chords: Enter, Tab, Escape, Backspace, Delete, Insert, arrows, Home, End, PageUp, PageDown, F1-F12, and Ctrl+<letter> in any case or separator. An unknown name is an error, not literal text.",
+        }),
+      ),
+      settleMs: Type.Optional(
+        Type.Number({
+          minimum: 0,
+          maximum: 10000,
+          description: "Wait this long before reading the screen back. Default 500, capped at 10000.",
+        }),
+      ),
+      request: Type.Optional(
+        Type.String({
+          description:
+            "Replay key for this call. A second shell_send with the same key writes nothing. Independent of shell_start request keys.",
+        }),
+      ),
     }),
     outputSchema: Type.Object({
       id: Type.String(),
@@ -960,7 +1067,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params) {
       const registry = requireRegistry();
-      const result: ShellSendResult = await registry.send(params as never);
+      const result: ShellSendResult = await registry.send(params);
       return {
         content: [
           {
@@ -981,18 +1088,30 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       "Cancel one or more executions: graceful signal, grace period, forced kill, then verification that the process tree is gone. Cancellation is not rollback.",
     promptGuidelines,
     parameters: Type.Object({
-      ids: Type.Union([Type.String(), Type.Array(Type.String())]),
-      ladder: Type.Optional(StringEnum(["graceful", "force"] as const)),
-      graceMs: Type.Optional(Type.Number()),
+      ids: Type.Union([Type.String(), Type.Array(Type.String())], {
+        description: "One handle id, or a list of them.",
+      }),
+      ladder: Type.Optional(
+        stringEnum(["graceful", "force"] as const, {
+          description:
+            "graceful (default) sends the interrupt a human would type or SIGTERM to the group, waits graceMs, then escalates; force starts at SIGKILL.",
+        }),
+      ),
+      graceMs: Type.Optional(
+        Type.Number({
+          minimum: 0,
+          description: "How long graceful waits before it escalates. Default 3000, capped at 30000.",
+        }),
+      ),
     }),
     outputSchema: cancelResultSchema,
     async execute(_toolCallId, params) {
       const registry = requireRegistry();
-      const results: ShellCancelResult[] = await registry.cancel(params as never);
+      const results: ShellCancelResult[] = await registry.cancel(params);
       const text = results
         .map(
           (result) =>
-            `${result.id}: ${result.status}${result.verifiedGone ? " · tree verified gone" : ` · leak: ${(result.leaked ?? []).join(", ")}`}${result.note ? ` · ${result.note}` : ""}`,
+            `${result.id}: ${result.status}${result.verifiedGone ? " · no tracked process survived" : ` · leak: ${(result.leaked ?? []).join(", ")}`}${result.note ? ` · ${result.note}` : ""}`,
         )
         .join("\n");
       return {
@@ -1009,11 +1128,13 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     description:
       "Point-in-time inspection of one handle or of all handles. This is not a polling primitive: synchronise with shell_await, and wait idly by ending the turn.",
     promptGuidelines,
-    parameters: Type.Object({ id: Type.Optional(Type.String()) }),
+    parameters: Type.Object({
+      id: Type.Optional(Type.String({ description: "One handle id. Omit to list every handle and workspace record." })),
+    }),
     outputSchema: statusResultSchema,
     async execute(_toolCallId, params) {
       const registry = requireRegistry();
-      const result: ShellStatusResult = registry.status(params as never);
+      const result: ShellStatusResult = registry.status(params);
       const lines = result.handles.map((handle) => describeHandle(handle));
       const header = `${result.running} running · ${result.ready} ready · workspace ${
         result.workspaceOwner ? "owned by this process" : "read-only"
