@@ -6,7 +6,6 @@ import {
   descendantsOf,
   groupMembers,
   identityAlive,
-  listProcesses,
   pgidOf,
   processIdentity,
   readProcStat,
@@ -141,13 +140,3 @@ export async function verifyGone(
   return { gone: alive.size === 0, remaining: [...alive] };
 }
 
-/** A cheap liveness cross-check that does not depend on `/proc/<pid>/environ`. */
-export function processTreeSize(identity: ProcessIdentity | undefined): number {
-  if (!identity) return 0;
-  if (!identityAlive(identity)) return 0;
-  return descendantsOf([identity]).length;
-}
-
-export function allProcessCount(): number {
-  return listProcesses().length;
-}
