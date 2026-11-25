@@ -14,20 +14,11 @@ import {
   createShellJobsImpl,
   type Impl,
 } from "./adapters.ts";
-import { PI_GLOBAL_NODE_MODULES, type BenchSession } from "./harness.ts";
+import type { BenchSession } from "./harness.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(here, "..");
 export const VENDORS = join(here, "vendors", "node_modules");
-
-/** The globally installed pi-background-tasks, which is the incumbent. */
-const GLOBAL_BACKGROUND_TASKS = join(
-  PI_GLOBAL_NODE_MODULES,
-  "pi-background-tasks",
-  "dist",
-  "extensions",
-  "background-tasks.js",
-);
 
 export interface ImplSpec {
   key: string;
@@ -49,12 +40,18 @@ function vendorVersion(dir: string): string {
   }
 }
 
-function vendorEntry(dir: string): string {
+/**
+ * The entry a vendor package declares for itself. `hint` selects among several
+ * entries by file name; the path itself always comes from the package, so the
+ * benchmark never guesses where an extension lives.
+ */
+function vendorEntry(dir: string, hint?: string): string {
   const pkg = JSON.parse(readFileSync(join(VENDORS, dir, "package.json"), "utf8")) as {
     pi?: { extensions?: string[] };
   };
-  const rel = pkg.pi?.extensions?.[0];
-  if (!rel) throw new Error(`${dir} declares no pi.extensions entry`);
+  const declared = pkg.pi?.extensions ?? [];
+  const rel = hint ? declared.find((entry) => entry.endsWith(hint)) : declared[0];
+  if (!rel) throw new Error(`${dir} declares no pi.extensions entry matching ${hint ?? "the first one"}`);
   return join(VENDORS, dir, rel.replace(/^\.\//, ""));
 }
 
@@ -80,9 +77,11 @@ export const IMPLS: ImplSpec[] = [
   },
   {
     key: "bg-tasks",
-    packageName: `pi-background-tasks@${globalVersion("pi-background-tasks")}`,
+    // pi-background-tasks ships two extensions; the background-tasks one is the
+    // incumbent this benchmark compares against.
+    packageName: `pi-background-tasks@${vendorVersion("pi-background-tasks")}`,
     downloads: 26780,
-    extension: GLOBAL_BACKGROUND_TASKS,
+    extension: vendorEntry("pi-background-tasks", "background-tasks.js"),
     create: createBackgroundTasksImpl,
   },
   {
@@ -135,17 +134,6 @@ export const IMPLS: ImplSpec[] = [
     create: createExecCommandImpl,
   },
 ];
-
-function globalVersion(name: string): string {
-  try {
-    const pkg = JSON.parse(
-      readFileSync(join(PI_GLOBAL_NODE_MODULES, name, "package.json"), "utf8"),
-    ) as { version: string };
-    return pkg.version;
-  } catch {
-    return "unknown";
-  }
-}
 
 export function specFor(key: string): ImplSpec {
   const spec = IMPLS.find((entry) => entry.key === key);

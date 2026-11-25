@@ -8,6 +8,7 @@
     "@tduyng/pi-shell": "0.0.6",
     "pi-async": "0.4.4",
     "pi-background": "0.4.4",
+    "pi-background-tasks": "2.6.10",
     "pi-better-background-tasks": "0.18.0",
     "pi-exec-command": "0.3.10",
     "pi-patty-bg-tasks": "1.1.6",

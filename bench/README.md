@@ -48,10 +48,15 @@ These are bench-environment repairs, not favours to any implementation:
 
 ## Limits
 
-- `pi-background-tasks` is the globally installed copy under
-  `~/.pi/agent/npm/node_modules`, not a vendored one. Its version is recorded in
-  the report. Set `PI_GLOBAL_NODE_MODULES` when Pi's global store lives
-  elsewhere.
+- All eight competitors are pinned in `bench/vendors/package.json`, including
+  `pi-background-tasks`, and each one is loaded through the entry it declares
+  for itself. Nothing is read from the machine's global Pi store, so the field
+  no longer depends on what that machine happens to have installed.
+- `pi-exec-command@0.3.10` publishes three of its own bundled packages as
+  `file:../<name>` dependencies, which pnpm 11.29 and later refuse with
+  `ERR_PNPM_LOCAL_SUBDEP_NOT_ALLOWED`. `bench/vendors/pnpm-workspace.yaml`
+  rewrites them through `overrides` to the exact versions the tarball bundles,
+  so the installed code is the same and the install is reproducible.
 - `pi-shell-jobs` needs `@homebridge/node-pty-prebuilt-multiarch` for `tty: true`.
   It is in the vendor manifest for that reason. Its install script is denied in
   `bench/vendors/pnpm-workspace.yaml`, so the native binding is absent and the

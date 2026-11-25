@@ -10,6 +10,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Impl } from "./adapters.ts";
@@ -43,11 +44,32 @@ function environment(): Record<string, string> {
   return {
     date: new Date().toISOString(),
     node: process.version,
+    // The CLI on PATH is not necessarily the SDK in node_modules, and the SDK is
+    // what every session in this run actually loaded.
+    sdk: HOST_PACKAGES.map((name) => `${name}@${installedVersion(name)}`).join(", "),
     pi: run("pi --version"),
     shell: process.env.SHELL ?? "unknown",
     kernel: run("uname -sr"),
     cpus: run("nproc"),
+    // Admission latency follows machine load, so the load at the start of the
+    // run belongs beside the numbers it produced.
+    loadAvg: loadavg()
+      .map((value) => value.toFixed(2))
+      .join(" "),
   };
+}
+
+const HOST_PACKAGES = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"];
+
+function installedVersion(name: string): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(root, "node_modules", name, "package.json"), "utf8"),
+    ) as { version: string };
+    return pkg.version;
+  } catch {
+    return "not installed";
+  }
 }
 
 // --------------------------------------------------------------------- runner

@@ -7,7 +7,7 @@
  * keeping the code path that a model would actually reach.
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createAgentSession,
@@ -36,22 +36,7 @@ async function ensureTheme(): Promise<void> {
   themeReady = true;
 }
 
-/**
- * Where Pi installs packages globally. The benchmark reads the incumbent
- * `pi-background-tasks` from here, never from this repository's own
- * `node_modules`. Set `PI_GLOBAL_NODE_MODULES` when Pi lives elsewhere.
- */
-export const PI_GLOBAL_NODE_MODULES =
-  process.env.PI_GLOBAL_NODE_MODULES ?? join(homedir(), ".pi", "agent", "npm", "node_modules");
-
 export const ASYNC_SHELL_EXTENSION = new URL("../src/extension.ts", import.meta.url).pathname;
-export const BACKGROUND_TASKS_EXTENSION = join(
-  PI_GLOBAL_NODE_MODULES,
-  "pi-background-tasks",
-  "dist",
-  "extensions",
-  "background-tasks.js",
-);
 
 export interface ToolCallResult {
   text: string;

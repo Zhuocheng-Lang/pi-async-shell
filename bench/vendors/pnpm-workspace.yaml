@@ -16,3 +16,15 @@ allowBuilds:
   '@google/genai': false
   '@homebridge/node-pty-prebuilt-multiarch': false
   protobufjs: false
+
+# pi-exec-command@0.3.10 publishes three of its bundled packages as
+# `file:../<name>` dependencies. pnpm >= 11.29 refuses a local specifier
+# declared by a non-local package (ERR_PNPM_LOCAL_SUBDEP_NOT_ALLOWED), and the
+# published manifest is what pnpm reads, so the install cannot proceed without a
+# rewrite. Each override names the exact version the tarball bundles, so the
+# installed code is the same as the bundled copy the earlier reports measured;
+# it is fetched from the registry instead of taken out of the archive.
+overrides:
+  'pi-exec-command>@luan.sh/pi-libactions': '@luan.sh/pi-libactions@0.3.4'
+  'pi-exec-command>@luan.sh/pi-libtui': '@luan.sh/pi-libtui@0.3.15'
+  'pi-exec-command>@luan.sh/pi-xsettings': '@luan.sh/pi-xsettings@0.3.7'
