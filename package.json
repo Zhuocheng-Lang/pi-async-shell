@@ -81,5 +81,12 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "26.13.1",
+      "onFail": "download"
+    }
   }
 }
