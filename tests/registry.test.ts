@@ -407,3 +407,16 @@ test("unknown handles are refused with a clear message", async () => {
     await registry.shutdown("quit");
   }
 });
+
+test("an await pattern is refused when it can backtrack catastrophically", async () => {
+  const registry = makeRegistry(tempCwd());
+  try {
+    const handle = await registry.start({ command: "echo ready; sleep 5", scope: "session" });
+    await assert.rejects(
+      () => registry.awaitHandles({ ids: handle.id, until: { kind: "pattern", regex: "(x+)+y" }, waitMs: 100 }),
+      /nested quantifiers/,
+    );
+  } finally {
+    await registry.shutdown("quit");
+  }
+});

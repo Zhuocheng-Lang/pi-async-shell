@@ -43,6 +43,7 @@ import {
   readScreenLog,
   type ReadOutcome,
 } from "./log-manager.ts";
+import { compilePattern } from "./pattern.ts";
 import {
   collectRegistryGarbage,
   DEFAULT_GC_MAX_RECORDS,
@@ -606,12 +607,7 @@ export class ShellRegistry {
 
     if (until.kind === "pattern") {
       for (const exec of execs) {
-        let regex: RegExp;
-        try {
-          regex = new RegExp(until.regex);
-        } catch (error) {
-          throw new Error(`invalid await pattern: ${(error as Error).message}`);
-        }
+        const regex = compilePattern(until.regex, "shell_await pattern");
         const stream = until.stream ?? "combined";
         const path = this.streamPath(exec, stream);
         let offset = 0;
