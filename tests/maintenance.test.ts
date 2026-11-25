@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { assertLinux } from "../src/core/identity.ts";
@@ -76,6 +76,18 @@ test("non-Linux platforms fail clearly instead of returning an empty process tre
   assert.throws(() => assertLinux("win32"), /supports Linux only.*win32/);
 });
 
+test("runtime directories are owner-only", () => {
+  const paths = registryPaths(tempCwd(), "private", 7);
+  ensureRegistryDirs(paths);
+  for (const dir of [paths.root, paths.sessionDir, paths.workspaceDir, paths.requestsDir]) {
+    assert.equal(
+      statSync(dir).mode & 0o777,
+      0o700,
+      `${dir} must not be enterable by another local user`,
+    );
+  }
+});
+
 test("registry initialization creates a non-destructive gitignore", () => {
   const paths = registryPaths(tempCwd(), "gitignore", 123);
   ensureRegistryDirs(paths);
@@ -87,7 +99,7 @@ test("registry initialization creates a non-destructive gitignore", () => {
 });
 
 function writeExecution(
-  paths: RegistryPaths,
+  _paths: RegistryPaths,
   parent: string,
   id: string,
   status: "running" | "completed",
@@ -96,7 +108,7 @@ function writeExecution(
 ): string {
   const dir = join(parent, id);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "combined.log"), id + "\n");
+  writeFileSync(join(dir, "combined.log"), `${id}\n`);
   writeFileSync(
     join(dir, "meta.json"),
     JSON.stringify({
@@ -127,7 +139,7 @@ function writeExecution(
 }
 
 function writeRequest(paths: RegistryPaths, id: string, createdAt: number): string {
-  const path = join(paths.requestsDir, id + ".json");
+  const path = join(paths.requestsDir, `${id}.json`);
   writeFileSync(path, JSON.stringify({ id, request: id, kind: "start", createdAt }));
   return path;
 }
@@ -161,6 +173,21 @@ test("GC removes expired terminal history but never running or current-session r
   assert.equal(existsSync(requests[2]), true);
   assert.equal(existsSync(requests[3]), true);
   assert.equal(existsSync(requests[4]), false, "an old orphan request expires");
+});
+
+test("GC reclaims a session directory that never ran a command", () => {
+  const now = Date.now();
+  const paths = registryPaths(tempCwd(), "current", 123);
+  ensureRegistryDirs(paths);
+  const stale = join(paths.root, "sessions", "old-999");
+  const old = new Date(now - 10 * 24 * 60 * 60 * 1000);
+  mkdirSync(stale, { recursive: true });
+  utimesSync(stale, old, old);
+
+  const result = collectRegistryGarbage(paths, { now, retentionMs: 24 * 60 * 60 * 1000 });
+  assert.equal(existsSync(stale), false, "an empty session directory is not history worth keeping");
+  assert.equal(result.removedSessionDirs, 1);
+  assert.equal(existsSync(paths.sessionDir), true, "the running session keeps its own directory");
 });
 
 test("GC count eviction keeps the newest terminal records and observes a grace period", () => {

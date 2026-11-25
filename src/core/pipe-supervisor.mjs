@@ -34,9 +34,11 @@ function identity() {
 }
 identity();
 
-const stdout = createWriteStream(join(dir, "stdout.log"), { flags: "a" });
-const stderr = createWriteStream(join(dir, "stderr.log"), { flags: "a" });
-const combined = createWriteStream(join(dir, "combined.log"), { flags: "a" });
+// Command output is plaintext and can hold anything the command printed, so the
+// files are owner-only even when the surrounding umask is permissive.
+const stdout = createWriteStream(join(dir, "stdout.log"), { flags: "a", mode: 0o600 });
+const stderr = createWriteStream(join(dir, "stderr.log"), { flags: "a", mode: 0o600 });
+const combined = createWriteStream(join(dir, "combined.log"), { flags: "a", mode: 0o600 });
 for (const stream of [stdout, stderr, combined]) stream.on("error", () => undefined);
 
 let logged = 0;

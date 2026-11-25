@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -44,17 +45,36 @@ export function registryPaths(cwd: string, sessionId: string, pid: number): Regi
   };
 }
 
+/**
+ * Create a runtime directory that no other local user can enter.
+ *
+ * The threat model already counts another local user reading a pty recording or
+ * writing to a stdin FIFO as in scope, and `umask` decides neither. `mode` only
+ * applies to a directory this call creates, so an existing one is chmodded: a
+ * checkout that already has a world-readable `.pi/async-shell` is exactly the
+ * case worth repairing.
+ */
+function ensurePrivateDir(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(path, 0o700);
+  } catch {
+    /* a runtime root on a filesystem without POSIX modes is still usable */
+  }
+}
+
 export function ensureRegistryDirs(paths: RegistryPaths): void {
-  mkdirSync(paths.root, { recursive: true });
+  ensurePrivateDir(paths.root);
   // Never replace a user's rule. A new runtime root starts fully ignored.
   try {
-    writeFileSync(join(paths.root, ".gitignore"), "*\n", { flag: "wx" });
+    writeFileSync(join(paths.root, ".gitignore"), "*\n", { flag: "wx", mode: 0o600 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  mkdirSync(paths.sessionDir, { recursive: true });
-  mkdirSync(paths.workspaceDir, { recursive: true });
-  mkdirSync(paths.requestsDir, { recursive: true });
+  ensurePrivateDir(join(paths.root, "sessions"));
+  ensurePrivateDir(paths.sessionDir);
+  ensurePrivateDir(paths.workspaceDir);
+  ensurePrivateDir(paths.requestsDir);
 }
 
 export function execDirFor(paths: RegistryPaths, scope: string, id: string): string {
@@ -93,6 +113,7 @@ export interface GarbageCollectionOptions {
 export interface GarbageCollectionResult {
   removedExecutions: string[];
   removedRequests: number;
+  removedSessionDirs: number;
 }
 
 interface StoredRecord {
@@ -205,6 +226,22 @@ export function collectRegistryGarbage(
     }
   });
 
+  // Every Pi process creates `sessions/<id>-<pid>/` at startup, and one that
+  // never ran a command leaves nothing for the per-record pass above to notice.
+  // Left alone they accumulate, and every scan of the workspace pays for them.
+  let removedSessionDirs = 0;
+  for (const session of directories(join(paths.root, "sessions"))) {
+    if (session === paths.sessionDir) continue;
+    try {
+      if (readdirSync(session).length > 0) continue;
+      if (now - statSync(session).mtimeMs <= retentionMs) continue;
+      rmdirSync(session);
+      removedSessionDirs += 1;
+    } catch {
+      /* a concurrent writer or a fresh directory is a reason to keep it */
+    }
+  }
+
   let removedRequests = 0;
   let requestNames: string[] = [];
   try {
@@ -224,5 +261,5 @@ export function collectRegistryGarbage(
       /* malformed or concurrently replaced records remain for the next pass */
     }
   }
-  return { removedExecutions, removedRequests };
+  return { removedExecutions, removedRequests, removedSessionDirs };
 }
