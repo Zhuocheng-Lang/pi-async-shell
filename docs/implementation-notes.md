@@ -262,13 +262,13 @@ Evidence: `pty.test.ts` — "a pty recording stops at the log cap without killin
 
 Full report: [`bench/REPORT.md`](../bench/REPORT.md). Each implementation loads alone into a real Pi SDK session, and the harness invokes its registered tools directly. The numbers therefore compare the implementations rather than a model. The field holds Pi's built-in `bash`, `pi-async-shell`, and eight packages: `pi-background-tasks@2.6.10`, `pi-better-background-tasks@0.18.0`, `pi-background@0.4.4`, `pi-patty-bg-tasks@1.1.6`, `pi-async@0.4.4`, `@tduyng/pi-shell@0.0.6`, `pi-shell-jobs@0.1.2`, and `pi-exec-command@0.3.10`.
 
-The first table asks what someone adopting this would notice. The second asks why the difference exists. Both quote the committed run, generated on 2026-11-25 by `node bench/run-bench.ts` against `@earendil-works/pi-coding-agent@1.5.2`, with a load average of 3.74 when the run started. It is a run of the code in this repository, so the `pi-async-shell` rows include `inlineSettleMs` and pipeline status.
+The first table asks what someone adopting this would notice. The second asks why the difference exists. Both quote the committed run, generated on 2026-11-25 by `node bench/run-bench.ts` against `@earendil-works/pi-coding-agent@1.6.0`, with a load average of 2.79 when the run started. It is a run of the code in this repository, so the `pi-async-shell` rows include `inlineSettleMs` and pipeline status.
 
 | What a user gets | pi-async-shell | pi-background-tasks |
 |---|---|---|
 | A dev server started in one turn answers in the next | yes, 1 call to know it is ready | yes, 8 log polls |
 | A prompt after a 4000-line burst can be answered | yes, PTY, answered | no, prompt visible, no stdin |
-| One 2.5 s command: time, context, calls to the answer | 2569.1 ms, 677 B, 3 calls | 2537.5 ms, 12.9 KB, 3 calls |
+| One 2.5 s command: time, context, calls to the answer | 2555 ms, 677 B, 3 calls | 2523.7 ms, 12.9 KB, 3 calls |
 | Cancel a runaway: output kept, nothing left running | yes, 0 leftovers | yes, 0 leftovers |
 | Output recovered after the agent is killed and restarted | yes, 40/40 lines | no, no handle, no log |
 | A task survives a hard parent exit | yes, 25/25 lines | no, 4/25 lines |
@@ -278,7 +278,7 @@ The first table asks what someone adopting this would notice. The second asks wh
 | In-turn causal barrier | yes (0 turn boundaries) | no (1 turn boundary) |
 | 30 MiB log does not kill the process | yes, 31.4 MB logged | no, killed at 20 MiB |
 | One line of a 200k-line log is reachable | yes, 362 bytes, 1 call | no, 102 KB, 2 calls |
-| Three parallel commands overlap | yes, 455 ms | yes, 433 ms |
+| Three parallel commands overlap | yes, 452 ms | yes, 433 ms |
 
 Two rows are not a contest, and the report says so. Both implementations leave nothing running after a cancel. Both keep a dev server reachable across a turn boundary. What differs in the dev-server row is the cost of knowing the server is up, not whether it works. `patty` also survives a hard parent exit (25/25 lines). It is the only other package in the field that does.
 
@@ -286,11 +286,11 @@ The harness measures admission latency after one unmeasured warmup call. The per
 
 | Admission | pi-async-shell | pi-background-tasks | pi-better-background-tasks |
 |---|---|---|---|
-| median | 6.5 ms | 8.0 ms | 114.2 ms |
-| p95 | 9.0 ms | 9.6 ms | 128.6 ms |
-| first call in the process | 6.5 ms | 7.7 ms | 109.6 ms |
+| median | 5.8 ms | 6.8 ms | 106.2 ms |
+| p95 | 9.2 ms | 12.1 ms | 153.7 ms |
+| first call in the process | 6.0 ms | 4.9 ms | 111.6 ms |
 
-The median is the stable number, and even it moves with machine load. The committed run started at a load average of 3.74 and recorded 6.5 ms for `pi-async-shell`; the same build measured separately, with no other benchmark work running, recorded a 3.3 ms median in each of three rounds of the same ten samples. The report quotes the run it came from, and the load it started under, rather than the friendlier number. The first call in a process is module loading and JIT, not admission.
+The median is the stable number, and even it moves with machine load. The committed run started at a load average of 2.79 and recorded 5.8 ms for `pi-async-shell`; the run before it, at 3.74, recorded 6.5 ms, and an isolated rerun of the same ten samples under no other load measured 3.3 ms. The report quotes the run it came from, and the load it started under, rather than the friendliest number. The first call in a process is module loading and JIT, not admission.
 
 ---
 

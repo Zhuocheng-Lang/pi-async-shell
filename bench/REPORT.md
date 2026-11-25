@@ -10,14 +10,14 @@ Columns: `bash` = Pi built-in bash, `async-shell` = pi-async-shell, `bg-tasks` =
 
 ## Environment
 
-- date: `2026-11-25T07:40:48.908Z`
+- date: `2026-11-25T09:28:36.073Z`
 - node: `v26.13.1`
-- sdk: `@earendil-works/pi-coding-agent@1.5.2, @earendil-works/pi-ai@1.5.2`
+- sdk: `@earendil-works/pi-coding-agent@1.6.0, @earendil-works/pi-ai@1.6.0`
 - pi: `1.6.0`
 - shell: `/bin/sh`
 - kernel: `Linux 7.3.5-2-cachyos`
 - cpus: `28`
-- loadAvg: `3.74 3.10 3.01`
+- loadAvg: `2.79 3.02 2.93`
 
 ## The field
 
@@ -60,7 +60,7 @@ implementation has no tool that can do the thing at all.
 |---|---|---|---|---|---|---|---|---|---|---|
 | A dev server started in one turn answers in the next | — | yes — 1 call(s) to know it is ready | yes — 8 call(s) to know it is ready | yes — 7 call(s) to know it is ready | yes — 8 call(s) to know it is ready | yes — 8 call(s) to know it is ready | yes — 8 call(s) to know it is ready | yes — 8 call(s) to know it is ready | yes — 1 call(s) to know it is ready | yes — 1 call(s) to know it is ready |
 | A prompt after a 4000-line burst can be answered | — | yes — prompt answered | no — prompt visible, no stdin | no — prompt visible, no stdin | no — prompt visible, no stdin | no — prompt visible, no stdin | no — prompt visible, no stdin | yes — prompt answered | yes — prompt answered | yes — prompt answered |
-| One 2.5 s command: time, context, calls to the answer | 2516.9 ms, 11913 B, 1 calls | 2569.1 ms, 677 B, 3 calls | 2531.1 ms, 12885 B, 3 calls | 2849.6 ms, 6460 B, 3 calls | 2524.3 ms, 573 B, 2 calls | 2514.7 ms, 342 B, 3 calls | 2508.2 ms, 17463 B, 2 calls | 2535.1 ms, 8572 B, 2 calls | 2520 ms, 12952 B, 2 calls | 2531.7 ms, 12316 B, 2 calls |
+| One 2.5 s command: time, context, calls to the answer | 2519.2 ms, 11913 B, 1 calls | 2555 ms, 677 B, 3 calls | 2523.7 ms, 12885 B, 3 calls | 2902 ms, 6460 B, 3 calls | 2517.7 ms, 573 B, 2 calls | 2509.8 ms, 342 B, 3 calls | 2507.6 ms, 17463 B, 2 calls | 2532.6 ms, 8572 B, 2 calls | 2507.8 ms, 12952 B, 2 calls | 2553.4 ms, 12316 B, 2 calls |
 | Cancel a runaway: output kept, nothing left running | — | yes — log still readable | yes — log still readable | yes — log still readable | yes — log still readable | yes — log still readable | yes — log still readable | yes — log still readable | no — output lost after the cancel | no — no cancel tool |
 | Output recovered after the agent is killed and restarted | — | yes — 40/40 lines | no — 0/40 lines | no — 0/40 lines | no — 0/40 lines | no — 0/40 lines | no — 0/40 lines | no — 0/40 lines | no — 0/40 lines | no — 0/40 lines |
 | A task survives a hard parent exit | — | yes — 25/25 lines | no — 4/25 lines | no — 0/25 lines | no — 3/25 lines | yes — 25/25 lines | no — 0/25 lines | no — 3/25 lines | no — 6/25 lines | no — 0/25 lines |
@@ -85,7 +85,7 @@ implementation has no tool that can do the thing at all.
 
 | metric | async-shell | bg-tasks | better-bg | pi-background | patty | pi-async | pi-shell | shell-jobs | exec-cmd |
 |---|---|---|---|---|---|---|---|---|---|
-| readyMs | 1276.9 | 1418.2 | 1549.9 | 1403.5 | 1407.3 | 1408.7 | 1422.4 | 5260 | 30268.7 |
+| readyMs | 1297.6 | 1412.1 | 1740 | 1404.3 | 1406.4 | 1407.4 | 1423 | 5258 | 30267.7 |
 | readyCalls | 1 | 8 | 7 | 8 | 8 | 8 | 8 | 1 | 1 |
 | ready | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | servedAtReady | yes | yes | yes | yes | yes | yes | yes | yes | yes |
@@ -94,7 +94,7 @@ implementation has no tool that can do the thing at all.
 | reachableAfterTurn | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | logReadableAfterTurn | yes | yes | yes | yes | yes | yes | yes | yes | no |
 | toolCalls | 5 | 12 | 11 | 12 | 12 | 12 | 12 | 5 | 5 |
-| bytesIntoModel | 956 | 1681 | 3932 | 1997 | 766 | 2892 | 1317 | 2382 | 821 |
+| bytesIntoModel | 956 | 1681 | 3932 | 1997 | 766 | 2892 | 1317 | 2370 | 821 |
 
 - `bash`: bash blocks until the server exits, so a long-lived service cannot be started at all
 - `bg-tasks`: no output-pattern wait: knowing the server is up costs one log poll per 200 ms
@@ -117,7 +117,7 @@ implementation has no tool that can do the thing at all.
 | answered | yes | no | no | no | no | no | yes | yes | yes |
 | answerLine | ANSWER[y] | ANSWER[] | ANSWER[] | ANSWER[] | ANSWER[] | ANSWER[] | ANSWER[y] | ANSWER[y] | ANSWER[y] |
 | hung | no | no | no | no | no | no | no | no | no |
-| wallMs | 373.1 | 26.8 | 524.8 | 20.8 | 426.4 | 24.3 | 285.8 | 5375.9 | 30303.2 |
+| wallMs | 373.3 | 26.6 | 854.1 | 21 | 427 | 23.3 | 281.6 | 5365.6 | 30356.1 |
 | logBytes | 162922 | 158917 | — | 158917 | 158917 | 158917 | 158918 | 162922 | — |
 | toolCalls | 5 | 3 | 3 | 3 | 3 | 3 | 6 | 5 | 5 |
 | bytesIntoModel | 2546 | 9214 | 9818 | 66930 | 12265 | 17498 | 9029 | 52937 | 121343 |
@@ -135,7 +135,7 @@ implementation has no tool that can do the thing at all.
 
 | metric | bash | async-shell | bg-tasks | better-bg | pi-background | patty | pi-async | pi-shell | shell-jobs | exec-cmd |
 |---|---|---|---|---|---|---|---|---|---|---|
-| answerMs | 2516.9 | 2569.1 | 2531.1 | 2849.6 | 2524.3 | 2514.7 | 2508.2 | 2535.1 | 2520 | 2531.7 |
+| answerMs | 2519.2 | 2555 | 2523.7 | 2902 | 2517.7 | 2509.8 | 2507.6 | 2532.6 | 2507.8 | 2553.4 |
 | answerFound | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | toolCalls | 1 | 3 | 3 | 3 | 2 | 3 | 2 | 2 | 2 | 2 |
 | bytesIntoModel | 11913 | 677 | 12885 | 6460 | 573 | 342 | 17463 | 8572 | 12952 | 12316 |
@@ -149,11 +149,11 @@ implementation has no tool that can do the thing at all.
 |---|---|---|---|---|---|---|---|---|---|
 | processesBefore | 3 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 |
 | leakedAfter | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 |
-| cancelMs | 68.4 | 9.5 | 161.4 | 0.2 | 0.3 | 16.1 | 0.1 | 2.1 | 0 |
+| cancelMs | 77.1 | 8.9 | 196.7 | 0.2 | 0.2 | 17 | 0.1 | 0.9 | 0 |
 | cancelSupported | yes | yes | yes | yes | yes | yes | yes | yes | no |
 | outputPreserved | yes | yes | yes | yes | yes | yes | yes | no | yes |
 | toolCalls | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
-| bytesIntoModel | 700 | 938 | 2236 | 519 | 418 | 733 | 504 | 1292 | 8156 |
+| bytesIntoModel | 700 | 938 | 2236 | 519 | 393 | 733 | 504 | 1292 | 8156 |
 
 - `bash`: bash blocks until the command ends, so there is nothing to cancel
 - `exec-cmd`: no cancel tool exists: the runaway cannot be stopped by the agent
@@ -178,7 +178,7 @@ implementation has no tool that can do the thing at all.
 - `patty`: pi-patty-bg-tasks@1.1.6 wrote 25 of 25 lines after the process that started it exited
 - `pi-async`: pi-async@0.4.4 wrote 0 of 25 lines after the process that started it exited
 - `pi-async`: no log path is exposed; the surviving output was read from a fresh session
-- `pi-async`: reading the surviving output failed: Error: Unknown task or name: 88b42a3c-13e3-4bb4-90cc-38981931681a
+- `pi-async`: reading the surviving output failed: Error: Unknown task or name: 9407181b-161e-4118-aaa6-f4f733c5e5fa
 - `pi-shell`: @tduyng/pi-shell@0.0.6 wrote 3 of 25 lines after the process that started it exited
 - `shell-jobs`: pi-shell-jobs@0.1.2 wrote 6 of 25 lines after the process that started it exited
 - `exec-cmd`: pi-exec-command@0.3.10 wrote 0 of 25 lines after the process that started it exited
@@ -201,16 +201,16 @@ implementation has no tool that can do the thing at all.
 
 - `bash`: bash has no handle and no log: when Pi dies there is nothing to recover
 - `bg-tasks`: the new session lists no handle for the job
-- `bg-tasks`: reading the old handle failed: Error: Unknown background task ID: ba64f77e5
+- `bg-tasks`: reading the old handle failed: Error: Unknown background task ID: b897aef90
 - `better-bg`: the new session lists no handle for the job
 - `pi-background`: the new session lists no handle for the job
 - `pi-background`: reading the old handle failed: Error: No background job bg1; known: none
 - `patty`: the new session lists no handle for the job
-- `patty`: reading the old handle failed: Error: Job not found: job-285917-1
+- `patty`: reading the old handle failed: Error: Job not found: job-352643-1
 - `pi-async`: the new session lists no handle for the job
-- `pi-async`: reading the old handle failed: Error: Unknown task or name: 3cc3b508-385f-4161-97d2-196b6c231592
+- `pi-async`: reading the old handle failed: Error: Unknown task or name: 9e449d61-50c6-4478-a4a0-3700407ebf96
 - `pi-shell`: the new session lists no handle for the job
-- `pi-shell`: reading the old handle failed: Error: No such task: 1d00dd6f
+- `pi-shell`: reading the old handle failed: Error: No such task: 02304b87
 - `exec-cmd`: the new session lists no handle for the job
 - `exec-cmd`: reading the old handle failed: Error: Unknown session id undefined
 
@@ -221,28 +221,28 @@ implementation has no tool that can do the thing at all.
 
 | metric | bash | async-shell | bg-tasks | better-bg | pi-background | patty | pi-async | pi-shell | shell-jobs | exec-cmd |
 |---|---|---|---|---|---|---|---|---|---|---|
-| medianMs | 2.3 | 6.5 | 8 | 114.2 | 0 | 2 | 3 | 2.3 | 8 | 21.2 |
-| p95Ms | 4.3 | 9 | 9.6 | 128.6 | 0.1 | 2.5 | 3.2 | 3.2 | 8.8 | 21.5 |
-| minMs | 1.9 | 6.1 | 5.9 | 94.7 | 0 | 1.9 | 2.8 | 2 | 6.8 | 21.2 |
-| maxMs | 4.3 | 9 | 9.6 | 128.6 | 0.1 | 2.5 | 3.2 | 3.2 | 8.8 | 21.5 |
-| firstCallMs | 4.8 | 6.5 | 7.7 | 109.6 | 0.1 | 3.7 | 3.2 | 4.2 | 8.5 | 21.5 |
+| medianMs | 2.2 | 5.8 | 6.8 | 106.2 | 0 | 2 | 2.6 | 2 | 3 | 41.8 |
+| p95Ms | 4.5 | 9.2 | 12.1 | 153.7 | 0.1 | 2.3 | 2.9 | 2.2 | 3.3 | 46.8 |
+| minMs | 1.8 | 5.6 | 5.5 | 93.7 | 0 | 1.8 | 2.3 | 1.9 | 2.7 | 41.7 |
+| maxMs | 4.5 | 9.2 | 12.1 | 153.7 | 0.1 | 2.3 | 2.9 | 2.2 | 3.3 | 46.8 |
+| firstCallMs | 2.6 | 6 | 4.9 | 111.6 | 0.1 | 2.6 | 2.9 | 2.7 | 3.7 | 42.3 |
 
-- `bash`: first call in the process: 4.8 ms (module load and JIT warmup, excluded from the percentiles)
-- `async-shell`: first call in the process: 6.5 ms (module load and JIT warmup, excluded from the percentiles)
-- `bg-tasks`: first call in the process: 7.7 ms (module load and JIT warmup, excluded from the percentiles)
-- `better-bg`: first call in the process: 109.6 ms (module load and JIT warmup, excluded from the percentiles)
+- `bash`: first call in the process: 2.6 ms (module load and JIT warmup, excluded from the percentiles)
+- `async-shell`: first call in the process: 6 ms (module load and JIT warmup, excluded from the percentiles)
+- `bg-tasks`: first call in the process: 4.9 ms (module load and JIT warmup, excluded from the percentiles)
+- `better-bg`: first call in the process: 111.6 ms (module load and JIT warmup, excluded from the percentiles)
 - `pi-background`: first call in the process: 0.1 ms (module load and JIT warmup, excluded from the percentiles)
-- `patty`: first call in the process: 3.7 ms (module load and JIT warmup, excluded from the percentiles)
-- `pi-async`: first call in the process: 3.2 ms (module load and JIT warmup, excluded from the percentiles)
-- `pi-shell`: first call in the process: 4.2 ms (module load and JIT warmup, excluded from the percentiles)
-- `shell-jobs`: first call in the process: 8.5 ms (module load and JIT warmup, excluded from the percentiles)
-- `exec-cmd`: first call in the process: 21.5 ms (module load and JIT warmup, excluded from the percentiles)
+- `patty`: first call in the process: 2.6 ms (module load and JIT warmup, excluded from the percentiles)
+- `pi-async`: first call in the process: 2.9 ms (module load and JIT warmup, excluded from the percentiles)
+- `pi-shell`: first call in the process: 2.7 ms (module load and JIT warmup, excluded from the percentiles)
+- `shell-jobs`: first call in the process: 3.7 ms (module load and JIT warmup, excluded from the percentiles)
+- `exec-cmd`: first call in the process: 42.3 ms (module load and JIT warmup, excluded from the percentiles)
 
 #### In-turn causal barrier (400 ms command)
 
 | metric | bash | async-shell | bg-tasks | better-bg | pi-background | patty | pi-async | pi-shell | shell-jobs | exec-cmd |
 |---|---|---|---|---|---|---|---|---|---|---|
-| timeToResultMs | 403.5 | 449 | 433 | 1577.4 | 430.7 | 404.4 | 406 | 430.3 | 409.5 | 422.6 |
+| timeToResultMs | 402.7 | 448.9 | 429.3 | 899 | 426.9 | 403.6 | 404.9 | 429.9 | 403.7 | 443.4 |
 | toolCalls | 1 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
 | turnBoundaries | 0 | 0 | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
 | inTurnAwait | yes | yes | no | no | no | yes | yes | yes | yes | yes |
@@ -260,12 +260,12 @@ implementation has no tool that can do the thing at all.
 |---|---|---|---|---|---|---|---|---|---|---|
 | status | completed | completed | failed | completed | completed | completed | failed | completed | completed | completed |
 | exitCode | 0 | 0 | — | 0 | 0 | — | 1 | 0 | — | 1 |
-| loggedBytes | 4121 | 31457289 | 20971595 | — | 31457289 | 31457289 | 20971520 | 31457289 | 12189696 | — |
-| wallMs | 202.8 | 229.3 | 341.5 | 1033.7 | 4573.9 | 17.4 | 44.8 | 63.3 | 73.1 | 328.4 |
+| loggedBytes | 4121 | 31457289 | 20971595 | — | 31457289 | 31457289 | 20971520 | 31457289 | 1863680 | — |
+| wallMs | 270.8 | 207.3 | 327.3 | 1033 | 4675.2 | 16.1 | 40.1 | 63.2 | 20.1 | 811 |
 | killedByCap | no | no | yes | no | no | no | yes | no | no | no |
 | tailSawFinished | yes | yes | no | yes | yes | yes | no | no | no | yes |
 
-- `bg-tasks`: status text: ✗ b35dd5f52 failed 332ms exit=null pid=282253 — cap error=Output exceeded cap of 20.0MB; terminating task
+- `bg-tasks`: status text: ✗ b0a7a57d0 failed 305ms exit=null pid=345743 — cap error=Output exceeded cap of 20.0MB; terminating task
 - `pi-async`: status text: []
 
 #### Locate one line in a 200k-line log
@@ -292,8 +292,8 @@ implementation has no tool that can do the thing at all.
 
 | metric | async-shell | bg-tasks | better-bg | pi-background | patty | pi-async | pi-shell | shell-jobs | exec-cmd |
 |---|---|---|---|---|---|---|---|---|---|
-| startSpanMs | 16.2 | 10.7 | 281.2 | 0.2 | 7.3 | 8.6 | 8.9 | 262.6 | 254.3 |
-| wallMs | 455.4 | 433 | 932.3 | 422.5 | 409.1 | 410.4 | 482.9 | 414.9 | 424.9 |
+| startSpanMs | 14.2 | 8.8 | 329.2 | 0.2 | 7 | 7.4 | 6.8 | 260.5 | 258.3 |
+| wallMs | 451.8 | 433.2 | 1475.5 | 424.2 | 408.4 | 409.1 | 481.8 | 412.2 | 448.8 |
 | toolCalls | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 4 |
 | notifications | 0 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 |
 | parallel | yes | yes | yes | yes | yes | yes | yes | yes | yes |

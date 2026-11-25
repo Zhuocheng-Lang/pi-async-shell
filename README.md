@@ -28,9 +28,9 @@ Every row below comes from [`bench/REPORT.md`](bench/REPORT.md) (`node bench/run
 
 | Scenario | Built-in `bash` | `pi-async-shell` | The other 8 npm extensions |
 |---|---|---|---|
-| **Start a dev server & know it is ready** | Blocks forever | **1 call** (`1.28 s` via output-pattern wait) | 6 extensions need **7–8 polling calls**; 2 wait `5.3 s` / `30.3 s` |
+| **Start a dev server & know it is ready** | Blocks forever | **1 call** (`1.30 s` via output-pattern wait) | 6 extensions need **7–8 polling calls**; 2 wait `5.3 s` / `30.3 s` |
 | **Find the answer in a 2.5 s noisy command** | `11,913 B` into model context | **`677 B` into model context** (via `shell_read` grep) | 6 extensions pour `6.4 KB–17.4 KB` into context; only 1 other has log grep. 2 show less (`pi-background` 573 B, `pi-patty-bg-tasks` 342 B) because they return less of the output |
-| **Answer a `[y/N]` prompt after 4,000 lines** | Cannot send stdin | **Answered in `373 ms`** (`binding: "pty"` + `shell_send`) | 5 fail (no stdin); 2 take `5.4 s` / `30.3 s`; only 1 pipe tool answers fast |
+| **Answer a `[y/N]` prompt after 4,000 lines** | Cannot send stdin | **Answered in `373 ms`** (`binding: "pty"` + `shell_send`) | 5 fail (no stdin); 2 take `5.4 s` / `30.4 s`; only 1 pipe tool answers fast |
 | **A job survives a hard parent exit** | Cannot start one | **`25/25` lines** | Only `pi-patty-bg-tasks` also survives (`25/25`); the other 7 write 0–6 lines |
 | **Recover log output after Pi is killed & restarted** | Lost (`0/40` lines) | **Recovered `40/40` lines** (`scope: "workspace"`) | **All 8 lose everything (`0/40` lines)** |
 | **Cancel a runaway process tree cleanly** | Only on turn abort | **Signal ladder + no tracked process survived, log kept** | 1 has no cancel tool; 1 loses all output on cancel |
