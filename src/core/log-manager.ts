@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Zhuocheng-Lang
 // SPDX-License-Identifier: MPL-2.0
 
-import { createWriteStream, type WriteStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
 import { stripAnsi } from "./ansi.ts";
+import { compilePattern } from "./pattern.ts";
 import { renderScreen } from "./screen.ts";
-import type { ByteCounts, ShellReadParams, ShellReadRange } from "./types.ts";
+import type { ShellReadParams, ShellReadRange } from "./types.ts";
 
 export const DEFAULT_MAX_LOG_BYTES = 100 * 1024 * 1024;
 export const MAX_READ_LINES = 2000;
@@ -13,99 +14,21 @@ export const MAX_READ_BYTES = 50 * 1024;
 export const DEFAULT_READ_LINES = 200;
 export const DEFAULT_READ_BYTES = 16 * 1024;
 
-export interface LogWriterOptions {
-  stdoutPath: string;
-  stderrPath: string;
-  combinedPath: string;
-  capBytes?: number;
-  /** Called whenever bytes are appended or the cap is reached. */
-  onChange?: (bytes: ByteCounts) => void;
-}
-
 /**
- * Durable output with a cap that is a *logging* policy, never a *process* policy.
+ * The largest prefix length that ends on a UTF-8 character boundary.
  *
- * When the cap is reached the writer stops appending, but the caller keeps
- * draining the pipe and discards the surplus. A Linux pipe holds 64 KiB by
- * default; a cap implemented as "stop reading" turns a logging decision into a
- * blocked child, which is the failure this class exists to avoid.
+ * A read window ends wherever the byte count says, which can be inside a
+ * multi-byte character. Decoding that tail yields U+FFFD, so the partial bytes
+ * are excluded and the caller picks them up in the next window.
  */
-export class LogWriter {
-  readonly bytes: ByteCounts = { stdout: 0, stderr: 0, combined: 0, capReached: false };
-  private readonly capBytes: number;
-  private readonly stdoutStream: WriteStream;
-  private readonly stderrStream: WriteStream;
-  private readonly combinedStream: WriteStream;
-  private readonly onChange?: (bytes: ByteCounts) => void;
-  private closed = false;
-
-  constructor(options: LogWriterOptions) {
-    this.capBytes = options.capBytes ?? DEFAULT_MAX_LOG_BYTES;
-    this.onChange = options.onChange;
-    this.stdoutStream = createWriteStream(options.stdoutPath, { flags: "a" });
-    this.stderrStream = createWriteStream(options.stderrPath, { flags: "a" });
-    this.combinedStream = createWriteStream(options.combinedPath, { flags: "a" });
-    for (const stream of [this.stdoutStream, this.stderrStream, this.combinedStream]) {
-      stream?.on("error", () => {
-        /* A log write failure must never take the execution down. */
-      });
-    }
+export function completeUtf8Length(buffer: Buffer): number {
+  for (let back = 1; back <= Math.min(4, buffer.length); back += 1) {
+    const byte = buffer[buffer.length - back] as number;
+    if ((byte & 0xc0) === 0x80) continue; // a continuation byte: keep looking back
+    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    return needed > back ? buffer.length - back : buffer.length;
   }
-
-  get capReached(): boolean {
-    return this.bytes.capReached;
-  }
-
-  /** The remaining budget before the cap, in bytes. */
-  get remaining(): number {
-    return Math.max(0, this.capBytes - this.bytes.combined);
-  }
-
-  writeStdout(chunk: Buffer): void {
-    this.append(chunk, "stdout");
-  }
-
-  writeStderr(chunk: Buffer): void {
-    this.append(chunk, "stderr");
-  }
-
-  private append(chunk: Buffer, kind: "stdout" | "stderr"): void {
-    if (this.closed) return;
-    const size = chunk.length;
-    if (kind === "stdout") this.bytes.stdout += size;
-    else this.bytes.stderr += size;
-    if (this.bytes.combined >= this.capBytes) {
-      if (!this.bytes.capReached) {
-        this.bytes.capReached = true;
-        this.onChange?.({ ...this.bytes });
-      }
-      // Drain and discard. Never pause the source.
-      return;
-    }
-    const room = this.capBytes - this.bytes.combined;
-    const slice = size <= room ? chunk : chunk.subarray(0, room);
-    if (kind === "stderr") this.stderrStream.write(slice);
-    else this.stdoutStream.write(slice);
-    this.combinedStream.write(slice);
-    this.bytes.combined += slice.length;
-    if (slice.length < size && !this.bytes.capReached) {
-      this.bytes.capReached = true;
-    }
-    this.onChange?.({ ...this.bytes });
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    await Promise.all(
-      [this.stdoutStream, this.stderrStream, this.combinedStream].map(
-        (stream) =>
-          new Promise<void>((resolveClose) => {
-            stream.end(() => resolveClose());
-          }),
-      ),
-    );
-  }
+  return buffer.length;
 }
 
 interface IndexEntry {
@@ -225,6 +148,20 @@ export interface ReadOutcome {
   note?: string;
 }
 
+/**
+ * Decode one read window.
+ *
+ * `complete` says whether the window reaches EOF. When it does not, its last
+ * line is a fragment of a line that continues in the next window, and its last
+ * bytes may be a fragment of a character; neither belongs in the answer.
+ */
+function decodeWindow(buffer: Buffer, complete: boolean): string[] {
+  const usable = buffer.subarray(0, completeUtf8Length(buffer));
+  const lines = splitLines(usable.toString("utf8"));
+  if (!complete && lines.length > 0) lines.pop();
+  return lines;
+}
+
 function splitLines(text: string): string[] {
   if (text.length === 0) return [];
   const lines = text.split("\n");
@@ -282,7 +219,7 @@ export async function readLog(path: string, params: ShellReadParams): Promise<Re
   if (mode === "head") {
     const window = Math.min(totalBytes, Math.max(maxBytes * 4, 64 * 1024));
     const buffer = await readRange(path, 0, window);
-    const lines = splitLines(buffer.toString("utf8")).slice(0, maxLines);
+    const lines = decodeWindow(buffer, buffer.length >= totalBytes).slice(0, maxLines);
     const joined = lines.join("\n");
     const cut = cutToBytes(joined, maxBytes, "start");
     const endByte = cut.truncated
@@ -302,7 +239,7 @@ export async function readLog(path: string, params: ShellReadParams): Promise<Re
     }
     const window = Math.min(totalBytes - startByte, Math.max(maxBytes * 4, 64 * 1024));
     const buffer = await readRange(path, startByte, window);
-    const lines = splitLines(buffer.toString("utf8")).slice(0, maxLines);
+    const lines = decodeWindow(buffer, startByte + buffer.length >= totalBytes).slice(0, maxLines);
     const joined = lines.join("\n");
     const cut = cutToBytes(joined, maxBytes, "start");
     const consumed = cut.truncated
@@ -385,7 +322,7 @@ export async function readScreenLog(
   const window = Math.min(totalBytes, Math.max(maxBytes * 8, 256 * 1024));
   const start = totalBytes - window;
   const buffer = await readRange(path, start, window);
-  let raw = buffer.toString("utf8");
+  let raw = buffer.subarray(0, completeUtf8Length(buffer)).toString("utf8");
   if (start > 0) {
     // Never start the replay inside an escape sequence.
     const newline = raw.indexOf("\n");
@@ -406,12 +343,7 @@ export async function readScreenLog(
   if (mode === "grep") {
     const pattern = params.pattern;
     if (!pattern) throw new Error("shell_read mode=grep requires a pattern");
-    let regex: RegExp;
-    try {
-      regex = new RegExp(pattern);
-    } catch (error) {
-      throw new Error(`invalid grep pattern: ${(error as Error).message}`);
-    }
+    const regex = compilePattern(pattern, "shell_read pattern");
     const context = Math.max(0, Math.min(20, params.context ?? 2));
     const wanted = new Set<number>();
     let matches = 0;
@@ -489,12 +421,7 @@ interface GrepContext {
 async function grepLog(path: string, params: ShellReadParams, context: GrepContext): Promise<ReadOutcome> {
   const pattern = params.pattern;
   if (!pattern) throw new Error("shell_read mode=grep requires a pattern");
-  let regex: RegExp;
-  try {
-    regex = new RegExp(pattern);
-  } catch (error) {
-    throw new Error(`invalid grep pattern: ${(error as Error).message}`);
-  }
+  const regex = compilePattern(pattern, "shell_read pattern");
   const before = Math.max(0, Math.min(20, params.context ?? 2));
   const after = before;
 
@@ -502,9 +429,12 @@ async function grepLog(path: string, params: ShellReadParams, context: GrepConte
   const matches: { line: number; text: string }[] = [];
   const wanted = new Set<number>();
   let lineNumber = 0;
-  let byteOffset = 0;
   let matchedLines = 0;
   let truncated = false;
+  // A chunk boundary is a byte offset, not a character boundary. Decoding each
+  // chunk on its own turns a split character into U+FFFD, and a pattern written
+  // in any non-ASCII script then silently stops matching across that boundary.
+  const decoder = new StringDecoder("utf8");
   try {
     const info = await handle.stat();
     const buffer = Buffer.allocUnsafe(SCAN_CHUNK);
@@ -514,12 +444,11 @@ async function grepLog(path: string, params: ShellReadParams, context: GrepConte
       const length = Math.min(SCAN_CHUNK, info.size - position);
       const { bytesRead } = await handle.read(buffer, 0, length, position);
       if (bytesRead <= 0) break;
-      const text = carry + buffer.subarray(0, bytesRead).toString("utf8");
+      const text = carry + decoder.write(buffer.subarray(0, bytesRead));
       const lines = text.split("\n");
       carry = lines.pop() ?? "";
       for (const rawLine of lines) {
         lineNumber += 1;
-        byteOffset += Buffer.byteLength(rawLine, "utf8") + 1;
         const line = rawLine.replace(/\r$/, "");
         if (regex.test(line)) {
           matchedLines += 1;
@@ -536,6 +465,7 @@ async function grepLog(path: string, params: ShellReadParams, context: GrepConte
       position += bytesRead;
       if (truncated) break;
     }
+    if (!truncated) carry += decoder.end();
     if (!truncated && carry.length > 0) {
       lineNumber += 1;
       const tail = carry.replace(/\r$/, "");
@@ -564,6 +494,7 @@ async function grepLog(path: string, params: ShellReadParams, context: GrepConte
   try {
     const info = await handle2.stat();
     const buffer = Buffer.allocUnsafe(SCAN_CHUNK);
+    const selectedDecoder = new StringDecoder("utf8");
     let position = 0;
     let lineNumber = 0;
     let carry = "";
@@ -572,7 +503,7 @@ async function grepLog(path: string, params: ShellReadParams, context: GrepConte
       const length = Math.min(SCAN_CHUNK, info.size - position);
       const { bytesRead } = await handle2.read(buffer, 0, length, position);
       if (bytesRead <= 0) break;
-      const text = carry + buffer.subarray(0, bytesRead).toString("utf8");
+      const text = carry + selectedDecoder.write(buffer.subarray(0, bytesRead));
       const lines = text.split("\n");
       carry = lines.pop() ?? "";
       for (const line of lines) {

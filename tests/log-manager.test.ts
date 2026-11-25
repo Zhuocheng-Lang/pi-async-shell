@@ -62,6 +62,33 @@ test("grep returns matches with context and line numbers", async () => {
   assert.equal(result.note?.includes("1 matching line"), true);
 });
 
+test("grep matches a character that straddles a chunk boundary", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pas-log-"));
+  const path = join(dir, "combined.log");
+  // The scan reads 1 MiB at a time. "中" is three bytes, so a line that starts
+  // one byte before the boundary is split by the read and, decoded chunk by
+  // chunk, becomes U+FFFD on both sides of it.
+  const filler = `${"a".repeat(1024 * 1024 - 6)}\n`;
+  writeFileSync(path, `${filler}中文-answer\ntail\n`);
+  clearIndexCache();
+  // No context lines: the filler line is a megabyte long and would fill the
+  // byte budget before the match is reached.
+  const result = await readLog(path, { id: "x", mode: "grep", pattern: "中文", context: 0 });
+  assert.match(result.text, /中文-answer/, "a split character must not hide the line that holds it");
+});
+
+test("a pattern that could backtrack catastrophically is refused before it runs", async () => {
+  const path = fixture(10);
+  await assert.rejects(
+    () => readLog(path, { id: "x", mode: "grep", pattern: "(x+)+y" }),
+    /nested quantifiers/,
+  );
+  await assert.rejects(
+    () => readLog(path, { id: "x", mode: "grep", pattern: "a".repeat(600) }),
+    /the limit is 512/,
+  );
+});
+
 test("grep reports no match without throwing", async () => {
   const path = fixture(10);
   const result = await readLog(path, { id: "x", mode: "grep", pattern: "nope" });
