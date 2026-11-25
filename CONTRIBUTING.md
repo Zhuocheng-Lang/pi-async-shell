@@ -10,7 +10,7 @@ Issues, pull requests and reviews are welcome in English or Chinese.
 - Node.js 22.19.0 or later. `.node-version` and `.nvmrc` pin that floor, and CI runs it alongside the current release. The test suite runs `.ts` files directly through Node's built-in type stripping.
 - pnpm 12.21.0, the version pinned by `packageManager` in `package.json`. pnpm installs that version for you when the one on `PATH` is older.
 
-Nothing else. The type checker and the Pi host packages are devDependencies, so no global `tsc` and no Pi installation are needed to run the suite.
+Nothing else. The type checker, the property-test library, the Quint checker and the Pi host packages are devDependencies, so no global `tsc`, no global `quint` and no Pi installation are needed to run the suite.
 
 ## Set up
 
@@ -21,7 +21,7 @@ pnpm install
 pnpm verify
 ```
 
-`pnpm install` is the whole setup. It installs `typescript`, `@types/node` and the three Pi host packages at the versions the suite is verified against, all pinned in `devDependencies` and locked in `pnpm-lock.yaml`.
+`pnpm install` is the whole setup. It installs `typescript`, `@types/node`, `fast-check`, `@informalsystems/quint` and the three Pi host packages at the versions the suite is verified against. Every `devDependencies` entry is an exact version rather than a range, and `pnpm-lock.yaml` records it: so a toolchain bump is a manifest edit, an install and a lockfile change in one commit. A package earns a `devDependencies` entry only when this repository runs it. Two of the entries look redundant and are not: `@earendil-works/pi-ai` and `typebox` both arrive as dependencies of `@earendil-works/pi-coding-agent`, and both are declared anyway, because `autoInstallPeers` fills an undeclared peer from its `*` range. Drop `typebox` and a fresh resolution installs 1.4.7 where Pi ships 1.3.27, which is the drift `0.2.0` fixed; the declaration is what makes the type checker, the tests and the benchmark read the module Pi supplies. That pin follows the host: when `@earendil-works/pi-coding-agent` changes the `typebox` version it depends on, the `typebox` devDependency changes in the same commit, which `npm view @earendil-works/pi-coding-agent@latest dependencies.typebox` answers in one line. `vale` and `lychee` are the counter-example and stay out: they are documentation gates that many other repositories use at other versions, and a contributor who has them on `PATH` does not need this package to install them.
 
 The host packages are also declared in `peerDependencies` with a `*` range, which is the Pi package convention: Pi maps those imports to its own copies at runtime and never installs them from a manifest. The devDependency copies exist so the type checker, the tests and the benchmark import the same modules Pi would. Bumping them is a deliberate act: change `devDependencies`, run `pnpm install`, run `pnpm verify`, and commit the lockfile change with the bump.
 
@@ -40,6 +40,7 @@ The host packages are also declared in `peerDependencies` with a `*` range, whic
 | `pnpm test:unit` | Only the `tests/*.test.ts` files. |
 | `pnpm link-host` | Mirrors Pi's module store into `./node_modules` for the benchmark. |
 | `pnpm bench` | Regenerates `bench/out/results.json` and `bench/REPORT.md`. |
+| `pnpm run spec` | Type-checks the Quint model under `spec/` and simulates it: `spec:typecheck` then `spec:run`. `pnpm verify` does not call it. |
 | `pnpm pack --dry-run` | Lists the files the published tarball would contain. |
 | `pnpm run check:docs` | The document contract check. Node only, no binary. |
 | `pnpm run docs:prose` | Vale over `docs/`. Needs `vale` on `PATH`. |
@@ -68,16 +69,18 @@ The suite starts real processes and a real Pi SDK session driven by a faux provi
 
 ## Documentation
 
-`docs/` has four gates. They answer different questions, and three of them need something beyond `pnpm install`.
+`docs/` has four gates. They answer different questions, and two of them need something beyond `pnpm install`.
 
 | Gate | Command | Needs | Question |
 |---|---|---|---|
 | Doc contract | `pnpm run check:docs` | Node | Do the cross-references resolve, do the two languages match, does the frontmatter name the current version, do the `Evidence:` test titles exist, is every tool name real |
 | Prose lint | `pnpm run docs:prose` | `vale` on `PATH` | Does new prose use a word that `00-terminology.md` section 10 retires |
 | Link check | `pnpm run docs:links` | `lychee` on `PATH` | Does every relative link and every `#anchor` resolve |
-| Model | see `spec/README.md` | `npx @informalsystems/quint` | Does an ownership or delivery invariant survive an interleaving nobody wrote a test for |
+| Model | `pnpm run spec` | The pinned `@informalsystems/quint`, and its evaluator on the first run | Does an ownership or delivery invariant survive an interleaving nobody wrote a test for |
 
-`pnpm verify` runs the first one, because it needs nothing but Node. CI runs the three that `pnpm run docs` assembles — contract, prose and links — as a separate `docs` job. The Quint model is not in CI: it needs `npx @informalsystems/quint`, so it is run by hand from `spec/README.md` against the contract it models. Run `pnpm run docs` when you touch `docs/` and you have the two binaries; run `pnpm run check:docs` otherwise, and let CI do the rest.
+`pnpm verify` runs the first one, because it needs nothing but Node. CI runs the three that `pnpm run docs` assembles — contract, prose and links — as a separate `docs` job.
+
+The model stays out of both. A run of `quint run` is a random walk with no fixed trace to assert on, so its verdict is a fact about one seed rather than a gate a commit can pass, and its default backend downloads an evaluator on first use. It belongs to the change that edits the contract: run `pnpm run spec` as `spec/README.md` describes, read the trace or the clean result, and record the conclusion with the change. Run `pnpm run docs` when you touch `docs/` and you have the two binaries; run `pnpm run check:docs` otherwise, and let CI do the rest.
 
 ### Which file takes what
 

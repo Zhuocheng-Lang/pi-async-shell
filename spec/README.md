@@ -5,24 +5,46 @@ every interleaving a simulator can reach, up to a step bound. `docs/design/`
 states the contract in prose and `tests/` pins the cases the design names; these
 files cover the gap.
 
-The specifications are [Quint](https://quint-lang.org/). They are not a build
-step and not a dependency. `pnpm verify` does not run them, because a model is
-read when a contract changes, not on every commit.
+The specifications are [Quint](https://quint-lang.org/). The checker is a
+devDependency pinned at `0.34.0`, so every checkout reads the model with the
+version it was last checked with instead of whatever `@latest` serves that day.
+`pnpm verify` does not run it, because a model is read when a contract changes,
+not on every commit.
 
 ## Running one
 
-Quint runs from npm with no install:
+`pnpm install` puts `quint` in `node_modules/.bin`, and three scripts run the
+check:
 
 ```sh
-npx @informalsystems/quint@latest typecheck spec/handle-lifecycle.qnt
-npx @informalsystems/quint@latest run spec/handle-lifecycle.qnt \
+pnpm run spec:typecheck   # quint typecheck
+pnpm run spec:run         # quint run, 5000 samples, 20 steps
+pnpm run spec             # both
+```
+
+`pnpm verify` and CI leave these three out on purpose; a contract that changes
+is what asks for them. The scripts expand to:
+
+```sh
+pnpm exec quint typecheck spec/handle-lifecycle.qnt
+pnpm exec quint run spec/handle-lifecycle.qnt \
   --max-samples=5000 --max-steps=20 --invariant=invariants
 ```
 
 `quint run` is a random simulator. It explores traces, stops at the first one
 that violates an invariant, and prints that trace. Raise `--max-samples` and
 `--max-steps` to search wider, and pass the `--seed` from a previous run to
-reproduce a trace.
+reproduce a trace; a run that takes its own seed prints that seed and the
+backend to pass back in on its last line.
+
+The install includes the checker, not the evaluator. `quint run` defaults to the
+`rust` backend, which downloads a pinned `rust-evaluator` binary into
+`~/.quint/` on its first run and reuses it afterwards; `--backend=typescript`
+runs without that download. Neither path runs at `pnpm install` time.
+
+The pinned `0.34.0` was checked against this model on 2026-11-25:
+`pnpm run spec:typecheck` reported nothing, and `pnpm run spec:run` reported
+`[ok] No violation found`.
 
 ## handle-lifecycle.qnt
 

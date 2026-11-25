@@ -1,8 +1,10 @@
 {
-  // Use the TypeScript in node_modules rather than the one the editor ships,
-  // so the editor and `pnpm typecheck` agree on diagnostics.
-  "typescript.tsdk": "node_modules/typescript/lib",
-  "typescript.enablePromptUseWorkspaceTsdk": true,
+  // No "typescript.tsdk" here on purpose. It pointed at
+  // node_modules/typescript/lib so the editor and `pnpm typecheck` agreed,
+  // which worked while that directory held tsserver.js. TypeScript 7 ships the
+  // compiler as a native binary and lib/ holds only tsc.js, so there is no
+  // language server to point the editor at; it uses its own TypeScript and
+  // `pnpm typecheck` stays the check of record.
 
   // .editorconfig covers these for editors that read it; VS Code needs them here.
   "files.eol": "\n",

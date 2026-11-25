@@ -59,6 +59,9 @@
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.ts\"",
     "test:unit": "node --test --test-concurrency=1 \"tests/*.test.ts\"",
     "bench": "node bench/run-bench.ts",
+    "spec:typecheck": "quint typecheck spec/handle-lifecycle.qnt",
+    "spec:run": "quint run spec/handle-lifecycle.qnt --max-samples=5000 --max-steps=20 --invariant=invariants",
+    "spec": "pnpm run spec:typecheck && pnpm run spec:run",
     "check:docs": "node scripts/check-docs.mjs",
     "docs:prose": "vale docs/",
     "docs:links": "lychee --config lychee.toml --offline --no-progress \"docs/**/*.md\" README.md README.zh-CN.md CONTRIBUTING.md",
@@ -72,12 +75,13 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.5.2",
-    "@earendil-works/pi-coding-agent": "1.5.2",
-    "@types/node": "^22.20.5",
-    "fast-check": "^4.10.3",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
+    "@informalsystems/quint": "0.34.0",
+    "@types/node": "22.20.5",
+    "fast-check": "4.11.0",
     "typebox": "1.3.27",
-    "typescript": "^6.0.3"
+    "typescript": "7.0.2"
   },
   "engines": {
     "node": ">=22.19.0"
