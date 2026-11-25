@@ -138,6 +138,22 @@ test("a promoted default pipe survives the Pi that promoted it", { timeout: 90_0
   await adoptAndDrive(cwd, record, logPath, "pipe");
 });
 
+test("an unpromoted session pty stops when its owner is killed", { timeout: 30_000 }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pas-pty-owner-loss-"));
+  const { child, record, logPath } = await startProducer(cwd, "session", "pty");
+  assert.equal(record.scope, "session");
+  assert.equal(await waitFor(() => countTicks(logPath) >= 3, 20_000), true);
+
+  child.kill("SIGKILL");
+  // The recording now passes through a writer that never stops reading, so the
+  // owner-loss tear-down has to work through one more process than before: the
+  // wrapper's watcher signals the group, and the terminal must still go with it.
+  await sleep(2500);
+  const before = countTicks(logPath);
+  await sleep(700);
+  assert.equal(countTicks(logPath), before, "fd 3 EOF must tear down an owned session terminal");
+});
+
 test("an unpromoted session pipe stops when its owner is killed", { timeout: 30_000 }, async () => {
   const cwd = mkdtempSync(join(tmpdir(), "pas-pipe-owner-loss-"));
   const { child, record, logPath } = await startProducer(cwd, "session", "pipe");

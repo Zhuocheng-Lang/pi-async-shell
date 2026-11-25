@@ -106,7 +106,7 @@ Adopted: group **and** tag, not either. The group is the cheap graceful path. It
 - **`lost` is a real outcome.** A `workspace` handle can have no exit record. When liveness stays unproven, the answer is `lost`, never `completed`.
 - **`unknown` is a real outcome.** A `shell_start` or `shell_send` interrupted after its intent record leaves the effect unknown. The honest answer is `unknown`, never a silent duplicate.
 - **A terminal viewport is not a log.** What a terminal displayed includes overwrites and cursor addressing. It is not evidence of the byte stream.
-- **The pipe cap is not a PTY cap.** A `pipe` execution stops recording at `PI_ASYNC_SHELL_MAX_LOG_BYTES` and keeps draining. `script(1)` writes a `pty` recording directly to disk. It grows until an operator or the filesystem stops it. Nothing kills the process in either case.
+- **The cap is one policy on two bindings.** A `pipe` execution stops recording at `PI_ASYNC_SHELL_MAX_LOG_BYTES` and keeps draining its pipes. A `pty` recording stops growing at the same cap because a bounded writer sits between `script(1)` and the file, and that writer keeps reading. Nothing kills the process in either case, and `util-linux`'s own `--output-limit`, which would, was rejected (ADR 0007).
 - **The wait is bounded by the host.** `shell_await` cannot exceed 50000 ms. A tool call cannot be suspended. A longer wait is ending the turn, not a longer `waitMs`.
 - **The runtime is Linux-only.** Process identity, containment and the PTY recipe depend on procfs, process groups and `script(1)`. A non-Linux platform fails with an explicit error instead of returning an empty process tree.
 

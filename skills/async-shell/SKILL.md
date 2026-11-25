@@ -135,4 +135,4 @@ A command that settles while nothing awaits it notifies you. If you are still wo
 
 Ambient API keys, common access tokens, and credential variables are filtered by default. shell_start.env can explicitly restore a variable, but tool arguments can enter the session transcript. Do not place real credentials there without user authorization.
 
-Pipe logs stop growing at their cap while output continues to drain. PTY recordings write directly to disk and do not use that cap. Use timeoutSeconds for runaway duration and let registry GC remove expired terminal history.
+Every log stops growing at PI_ASYNC_SHELL_MAX_LOG_BYTES (100 MiB by default) while the command keeps draining and keeps running: a pipe log through its supervisor, a PTY recording through the bounded writer between script(1) and the file. A capped log is the beginning of the output, not its end, so a tail read after bytes.capReached describes the end of that prefix. Use timeoutSeconds for runaway duration and let registry GC remove expired terminal history.

@@ -23,26 +23,54 @@ const EXIT_RECORD_LINES = [
 /**
  * script(1) writes straight to the log, a read-write FIFO keeps stdin open,
  * and fd 3 distinguishes owner loss from an explicit promotion release.
+ *
+ * `script` runs in the foreground on purpose. POSIX sets SIGINT and SIGQUIT to
+ * SIG_IGN in the child of an asynchronous list, and a non-interactive shell that
+ * inherited an ignored signal cannot reset it: `trap - INT QUIT` is a no-op in
+ * dash, which is /bin/sh on Debian and Ubuntu. A backgrounded `script` therefore
+ * hands the recorded terminal an unkillable SIGINT, so ^C reaches the pty line
+ * discipline and the byte arrives, but the foreground process group never takes
+ * the signal. Only the watcher is asynchronous now; it runs `kill` and nothing
+ * else, so the disposition it inherits cannot reach a command.
+ *
+ * The trap keeps this shell alive long enough to seal exit.json. A shell trap
+ * does not propagate: children still receive the default disposition.
  */
 export const PTY_WRAPPER = [
   "#!/bin/sh",
-  "# $1 = exec dir, $2 = 1 when the owner must not be outlived",
-  "d=$1; watch=$2",
+  "# $1 = exec dir, $2 = 1 when the owner must not be outlived, $3 = log cap",
+  "d=$1; watch=$2; cap=$3",
   ...IDENTITY_LINES,
   'fifo="$d/stdin.fifo"',
-  'rm -f "$fifo"',
-  'mkfifo "$fifo" || exit 1',
+  'rm -f "$fifo" "$d/script.rc"',
+  'mkfifo -m 600 "$fifo" || exit 1',
   'exec 4<>"$fifo"',
-  '( trap - INT QUIT; exec script -q -f -e -c "sh $d/pty-launcher.sh" /dev/null <&4 > "$d/combined.log" 2>&1 ) &',
-  "spid=$!",
+  "# script(1) truncates the log it is handed, so the owner-only mode has to be",
+  "# set on a file that already exists. The shell's own umask is left alone: it",
+  "# would otherwise follow every command the user runs.",
+  '( umask 077; : >> "$d/combined.log" )',
+  "# Only TERM is trapped: the group signals this runtime sends are TERM and",
+  "# KILL, and trapping INT or QUIT would take them away from script(1).",
+  "trap ':' TERM",
   'wd=""',
   'if [ "$watch" = "1" ]; then',
-  '  ( read -r release <&3; if [ "$release" = "release" ]; then exit 0; fi; kill -TERM "$spid" 2>/dev/null; sleep 1; kill -KILL "$spid" 2>/dev/null ) &',
+  '  ( trap ":" TERM; read -r release <&3; if [ "$release" = "release" ]; then exit 0; fi; kill -TERM 0 2>/dev/null; sleep 1; kill -0 $$ 2>/dev/null && kill -KILL 0 2>/dev/null ) &',
   "  wd=$!",
   "fi",
-  'wait "$spid"',
-  "rc=$?",
-  '[ -n "$wd" ] && kill "$wd" 2>/dev/null',
+  "# The launcher path travels in the environment: nesting it inside the -c",
+  "# string is what broke a workspace whose path contains a space.",
+  "#",
+  "# The recording goes through a bounded writer instead of straight into the",
+  "# file. script(1) terminates the session at --output-limit, which would let a",
+  "# full log kill the command; the writer stops appending and keeps reading, so",
+  "# the cap costs output and never the process. Its own status is carried out",
+  "# of the pipeline because POSIX reports the last stage's status.",
+  `{ script -q -f -e -c 'sh "$PI_ASYNC_SHELL_EXEC_DIR/pty-launcher.sh"' /dev/null <&4 2>&1; echo $? > "$d/script.rc"; } | "$PI_ASYNC_SHELL_NODE" "$d/recording-writer.mjs" "$d" "$cap"`,
+  'rc=$(cat "$d/script.rc" 2>/dev/null || echo 1)',
+  "# The watcher treats SIGTERM as owner loss, so stopping it here has to be a",
+  "# signal it cannot confuse with that. SIGTERM would fire its trap, interrupt",
+  "# the read, and make a normal exit look like the owner died.",
+  '[ -n "$wd" ] && kill -KILL "$wd" 2>/dev/null',
   ...EXIT_RECORD_LINES,
   'exit "$rc"',
   "",
@@ -55,6 +83,8 @@ export interface PtySize {
 
 const DEFAULT_PTY_COLS = 80;
 const DEFAULT_PTY_ROWS = 24;
+/** Matches the registry's `PI_ASYNC_SHELL_MAX_LOG_BYTES` default. */
+const DEFAULT_PTY_LOG_BYTES = 100 * 1024 * 1024;
 
 function clampInt(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
@@ -86,8 +116,10 @@ export function shQuote(value: string): string {
 
 export function writeWrapper(dir: string, name: string, body: string): string {
   const path = join(dir, name);
-  writeFileSync(path, body, { mode: 0o755 });
-  chmodSync(path, 0o755);
+  // /bin/sh is named explicitly, so the wrapper never needs to be executable by
+  // anyone else, and an owner-only file cannot be swapped before it runs.
+  writeFileSync(path, body, { mode: 0o700 });
+  chmodSync(path, 0o700);
   return path;
 }
 
@@ -149,6 +181,9 @@ function childEnv(ctx: SpawnContext): NodeJS.ProcessEnv {
     ...filterEnvironment(ctx.env, ctx.envOverrides),
     [EXEC_TAG_ENV]: ctx.id,
     PI_ASYNC_SHELL_EXEC_DIR: ctx.dir,
+    // The wrapper runs the recording writer by absolute path: a `node` from
+    // PATH could be a different runtime than the one loading this extension.
+    PI_ASYNC_SHELL_NODE: process.execPath,
   };
 }
 
@@ -190,9 +225,15 @@ export interface SpawnedPty {
 export function spawnPty(ctx: SpawnContext, options: { watch: boolean }): SpawnedPty {
   assertLinux();
   const wrapper = writeWrapper(ctx.dir, "pty-wrapper.sh", PTY_WRAPPER);
+  linkRecordingWriter(ctx.dir);
   linkToCombined(ctx.dir, "stdout.log");
   linkToCombined(ctx.dir, "ptyView.log");
-  const child = spawn("/bin/sh", [wrapper, ctx.dir, options.watch ? "1" : "0"], {
+  const child = spawn("/bin/sh", [
+    wrapper,
+    ctx.dir,
+    options.watch ? "1" : "0",
+    String(ctx.maxLogBytes ?? DEFAULT_PTY_LOG_BYTES),
+  ], {
     cwd: ctx.cwd,
     // script(1)'s intermediate parser is always POSIX; pty-launcher.sh starts
     // the configured command shell afterwards.
@@ -205,6 +246,20 @@ export function spawnPty(ctx: SpawnContext, options: { watch: boolean }): Spawne
   const owner = options.watch ? (child.stdio[3] as Writable | null) ?? undefined : undefined;
   owner?.on("error", () => undefined);
   return { child, owner };
+}
+
+/**
+ * A pty recording is written by the bounded writer, never by `script(1)`
+ * itself, so the cap is a logging policy rather than a process policy.
+ */
+function linkRecordingWriter(dir: string): void {
+  const target = join(dir, "recording-writer.mjs");
+  if (existsSync(target)) return;
+  try {
+    symlinkSync(fileURLToPath(new URL("./recording-writer.mjs", import.meta.url)), target);
+  } catch {
+    /* a missing writer surfaces as an execution that records nothing */
+  }
 }
 
 function linkToCombined(dir: string, name: string): void {

@@ -168,14 +168,14 @@ verify:    集合为空
 | `meta.json` | 注册表，原子改名 | 句柄、作用域、绑定、状态、身份、字节计数 |
 | `stdout.log` | 监督器（pipe）或指向 `combined.log` 的链接（pty） | stdout 字节 |
 | `stderr.log` | 监督器（pipe），pty 下为空 | stderr 字节 |
-| `combined.log` | 监督器（pipe）或 `script(1)`（pty） | 按到达顺序的流／终端录制 |
+| `combined.log` | 监督器（pipe）或有界录制写者（pty） | 按到达顺序的流／终端录制 |
 | `ptyView.log` | 指向 `combined.log` 的链接（仅 pty） | 重放为屏幕的录制 |
 | `pty-size` | 注册表（仅 pty） | 给 PTY 的行列数 |
 | `pid.json` | 监督器或包装器 | pid、pgid、启动时间，在命令之前写出 |
 | `exit.json` | 监督器或包装器 | 退出码、信号、结束时间 |
 | `completion.json` | 注册表 | 持久完成记录 |
-| `log-cap.json` | 监督器 | 已到达上限 |
-| `stdin.fifo`、`pty-wrapper.sh`、`pty-launcher.sh` | 包装器（FIFO）与注册表（脚本），仅 pty | 终端的 stdin 与 spawn 配方 |
+| `log-cap.json` | 监督器或录制写者 | 已到达上限 |
+| `stdin.fifo`、`pty-wrapper.sh`、`pty-launcher.sh`、`recording-writer.mjs` | 包装器（FIFO）与注册表（脚本与写者），仅 pty | 终端的 stdin 与 spawn 配方 |
 | `.surfaced` | 注册表（仅 workspace） | 该完成已投递过一次 |
 
 上限是*日志*策略，所以绝不能变成*进程*策略。到达 `PI_ASYNC_SHELL_MAX_LOG_BYTES`（默认 100 MiB）时：
@@ -187,7 +187,7 @@ verify:    集合为空
 
 第 2 步是最容易做错的一步。Linux 管道默认只缓冲 64 KiB。把上限实现成“停止读取”，会把写满的管道变成阻塞的子进程。它还会把日志决定变成挂起。这是与 `pi-background-tasks` 最大的行为差异，后者的 20 MiB 上限会杀死任务（`registry.ts:72`、`background-task-runtime.md`）。
 
-上限覆盖每一次 `pipe` 执行，因为监督器在两个作用域都持有管道。`pty` 录制由 `script(1)` 直接写盘。没有可暂停的管道，也没有可停止的写者，所以文件一直增长，直到运维手段或文件系统叫停。
+上限覆盖两种绑定下的每一次执行。`pipe` 执行由监督器封顶，它在两个作用域都持有管道。`pty` 录制由 `script(1)` 与 `combined.log` 之间的有界写者封顶：写者从不停止读取，最多追加到上限，其余丢弃，并写出 `log-cap.json`（[ADR 0007](../../adr/0007-bound-the-pty-recording-without-touching-the-process.md)）。保留的是录制的开头，因为前缀不会让行索引里已缓存的字节偏移失效，而轮转文件会。util-linux 自带的 `--output-limit` 经实测被否决：它会结束会话，从而把写满的日志变成一条失败的命令。
 
 行与字节索引每 256 行设一个稀疏检查点。`mode: "offset"` 因此可以 `pread`，而不是扫描。读取在打开文件*之前*检查 `signal.aborted`。把预先中断的信号传给 `createReadStream` 会抛出未处理的 `error` 事件。这正是 `~/.pi/agent/extensions/read-abort-guard.ts` 要补的 bug。
 

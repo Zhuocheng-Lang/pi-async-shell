@@ -168,14 +168,14 @@ Layout under `.pi/async-shell/{sessions/<sessionId>-<pid>|workspace}/<id>/`:
 | `meta.json` | registry, atomic rename | handle, scope, binding, status, identity, byte counts |
 | `stdout.log` | supervisor (pipe) or symlink to `combined.log` (pty) | stdout bytes |
 | `stderr.log` | supervisor (pipe) or empty for pty | stderr bytes |
-| `combined.log` | supervisor (pipe) or `script(1)` (pty) | arrival-ordered stream / terminal recording |
+| `combined.log` | supervisor (pipe) or the bounded recording writer (pty) | arrival-ordered stream / terminal recording |
 | `ptyView.log` | symlink to `combined.log` (pty only) | recording replayed as a screen |
 | `pty-size` | registry (pty only) | rows and columns given to the PTY |
 | `pid.json` | supervisor or wrapper | pid, pgid, start time, written before the command |
 | `exit.json` | supervisor or wrapper | exit code, signal, end time |
 | `completion.json` | registry | the durable completion record |
-| `log-cap.json` | supervisor | the cap was reached |
-| `stdin.fifo`, `pty-wrapper.sh`, `pty-launcher.sh` | wrapper (FIFO) and registry (scripts), pty only | the terminal's stdin and spawn recipe |
+| `log-cap.json` | supervisor or recording writer | the cap was reached |
+| `stdin.fifo`, `pty-wrapper.sh`, `pty-launcher.sh`, `recording-writer.mjs` | wrapper (FIFO) and registry (scripts and writer), pty only | the terminal's stdin and spawn recipe |
 | `.surfaced` | registry (workspace only) | this completion was delivered once |
 
 The cap is a *logging* policy, so it must not become a *process* policy. When `PI_ASYNC_SHELL_MAX_LOG_BYTES` (default 100 MiB) is reached:
@@ -187,7 +187,7 @@ The cap is a *logging* policy, so it must not become a *process* policy. When `P
 
 Step 2 is the step that is easy to get wrong. Linux pipes hold 64 KiB by default. A cap implemented as "stop reading" turns a full pipe into a blocked child. It also turns a logging decision into a hang. This is the single largest behavioural difference from `pi-background-tasks`, whose 20 MiB cap kills the task (`registry.ts:72`, `background-task-runtime.md`).
 
-The cap covers every `pipe` execution, because the supervisor owns the pipes at both scopes. A `pty` recording is written by `script(1)` directly to disk. There is no pipe to pause and no writer to stop, so the file grows until an operator or the filesystem stops it.
+The cap covers every execution, on both bindings. A `pipe` execution is capped by its supervisor, which owns the pipes at both scopes. A `pty` recording is capped by a bounded writer between `script(1)` and `combined.log`: the writer reads without ever stopping, appends at most the cap, drops the rest and writes `log-cap.json` ([ADR 0007](../adr/0007-bound-the-pty-recording-without-touching-the-process.md)). The retained bytes are the beginning of the recording, because a prefix keeps every cached byte offset in the line index and a rotating file would not. util-linux's own `--output-limit` was measured and rejected: it ends the session, which would turn a full log into a failed command.
 
 Line and byte indexing uses sparse checkpoints every 256 lines. `mode: "offset"` can therefore `pread` instead of scanning. A read checks `signal.aborted` *before* it opens the file. Passing a pre-aborted signal to `createReadStream` raises an unhandled `error` event. That is the bug that `~/.pi/agent/extensions/read-abort-guard.ts` exists to patch.
 
