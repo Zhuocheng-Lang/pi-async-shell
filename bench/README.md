@@ -17,6 +17,14 @@ Useful flags:
 | `--only=async-shell,bg-tasks` | run a subset of the field |
 | `--render-only` | re-render `REPORT.md` from the last `results.json` |
 
+`node bench/probe-tools.ts` is a manual probe, not a gate. It loads one
+extension at a time and prints the tools and the parameter names each one
+registers, which is where the capability matrix in `bench/REPORT.md` came from
+rather than a package's README. With no argument it walks the field `impls.ts`
+pins; with vendor directory names it probes a candidate that is not in the field
+yet, which is how `pi-process-monitor` and `@alignfirst/pi-background` were
+judged and dropped. The output also lands in `bench/out/tool-surface.json`.
+
 ## What is measured
 
 Every implementation is loaded alone into a real Pi SDK session and driven by

@@ -1,53 +1,75 @@
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createBenchSession } from "./harness.ts";
+import { IMPLS, ROOT, vendorEntry } from "./impls.ts";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
-const vendors = join(root, "bench", "vendors", "node_modules");
+/**
+ * Tool-surface probe. Loads one extension at a time and prints the tool names
+ * and parameter names it registers, so the capability matrix in
+ * `bench/REPORT.md` can be read off a real schema instead of a package's README.
+ *
+ * Manual: nothing imports it, `bench/run-bench.ts` does not call it, and it is
+ * not a gate.
+ *
+ *   node bench/probe-tools.ts                 # every extension in the pinned field
+ *   node bench/probe-tools.ts pi-shell-jobs   # named vendor directories instead
+ *
+ * The default field comes from `impls.ts`, so the probe cannot drift from the
+ * packages the report measured. Named directories are how a candidate is
+ * judged before it joins the field: `pi-process-monitor` and
+ * `@alignfirst/pi-background` were dropped after this printed their tools.
+ *
+ * Writes `bench/out/tool-surface.json` and exits 0 whatever the extensions do:
+ * one that fails to load is a row in the output, not a failed run.
+ */
+interface ProbeTarget {
+  key: string;
+  packageName: string;
+  extension: string;
+}
 
-const candidates = [
-  ["pi-better-background-tasks", "pi-better-background-tasks", "src/index.ts"],
-  ["pi-async", "pi-async", "extensions/index.ts"],
-  ["pi-background", "pi-background", "extensions/background.ts"],
-  ["pi-shell", "@tduyng/pi-shell", "src/index.ts"],
-  ["pi-shell-jobs", "pi-shell-jobs", "src/index.ts"],
-  ["pi-patty-bg-tasks", "pi-patty-bg-tasks", "index.ts"],
-  ["pi-process-monitor", "pi-process-monitor", "extensions"],
-  ["alignfirst-pi-background", "@alignfirst/pi-background", "index.js"],
-  ["pi-exec-command", "pi-exec-command", "src/extension.ts"],
-];
+interface ProbeResult extends ProbeTarget {
+  ok: boolean;
+  loadMs: number;
+  tools?: { name: string; parameters?: unknown }[];
+  error?: string;
+}
 
-const results = [];
-for (const [label, dir, rel] of candidates) {
-  const extension = join(vendors, dir, rel);
+const named = process.argv.slice(2);
+const targets: ProbeTarget[] =
+  named.length > 0
+    ? named.map((dir) => ({ key: dir, packageName: dir, extension: vendorEntry(dir) }))
+    : IMPLS.filter((spec) => spec.extension !== undefined).map((spec) => ({
+        key: spec.key,
+        packageName: spec.packageName,
+        extension: spec.extension as string,
+      }));
+
+const results: ProbeResult[] = [];
+
+for (const target of targets) {
   const started = Date.now();
-  // A path that is not installed loads as an extension with no tools, which
-  // would read as a pass. Report it as missing instead.
-  if (!existsSync(extension)) {
-    results.push({ label, extension, ok: false, loadMs: 0, error: `not installed: ${extension}` });
-    continue;
-  }
   try {
-    const session = await createBenchSession({ extension });
-    const tools = session.toolSchemas();
-    results.push({ label, extension, ok: true, loadMs: Date.now() - started, tools });
+    const session = await createBenchSession({ extension: target.extension });
+    results.push({ ...target, ok: true, loadMs: Date.now() - started, tools: session.toolSchemas() });
     session.dispose();
   } catch (error) {
-    results.push({ label, extension, ok: false, loadMs: Date.now() - started, error: String(error).slice(0, 600) });
+    results.push({ ...target, ok: false, loadMs: Date.now() - started, error: String(error).slice(0, 600) });
   }
 }
 
-mkdirSync(join(root, "bench", "out"), { recursive: true });
-writeFileSync(join(root, "bench", "out", "tool-surface.json"), JSON.stringify(results, null, 2));
+mkdirSync(join(ROOT, "bench", "out"), { recursive: true });
+writeFileSync(join(ROOT, "bench", "out", "tool-surface.json"), JSON.stringify(results, null, 2));
 
-for (const r of results) {
-  console.log("\n===== " + r.label + (r.ok ? " OK " + r.loadMs + "ms" : " FAILED: " + r.error));
-  if (!r.ok) continue;
-  for (const t of r.tools ?? []) {
-    const schema = (t.parameters ?? {}) as { properties?: Record<string, unknown>; required?: string[] };
+for (const result of results) {
+  const header = result.key + " (" + result.packageName + ")";
+  console.log("\n===== " + header + (result.ok ? " OK " + result.loadMs + "ms" : " FAILED: " + result.error));
+  if (!result.ok) continue;
+  for (const tool of result.tools ?? []) {
+    const schema = (tool.parameters ?? {}) as { properties?: Record<string, unknown>; required?: string[] };
     const params = Object.keys(schema.properties ?? {});
     const required = schema.required ?? [];
-    console.log("  " + t.name + "(" + params.map((k) => (required.includes(k) ? k + "*" : k)).join(", ") + ")");
+    console.log("  " + tool.name + "(" + params.map((key) => (required.includes(key) ? key + "*" : key)).join(", ") + ")");
   }
 }
 process.exit(0);

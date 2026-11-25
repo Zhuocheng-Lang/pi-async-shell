@@ -45,7 +45,7 @@ function vendorVersion(dir: string): string {
  * entries by file name; the path itself always comes from the package, so the
  * benchmark never guesses where an extension lives.
  */
-function vendorEntry(dir: string, hint?: string): string {
+export function vendorEntry(dir: string, hint?: string): string {
   const pkg = JSON.parse(readFileSync(join(VENDORS, dir, "package.json"), "utf8")) as {
     pi?: { extensions?: string[] };
   };
