@@ -22,17 +22,18 @@ Pi's built-in `bash` tool blocks until a process exits and cannot drive a long-l
 - **Survive a Pi crash or restart.** `scope: "workspace"` jobs live outside the Pi process and are automatically adopted by a later session with full log history intact. `shell_promote` upgrades a live session job to workspace ownership in place—no restart, no lost output.
 - **Wake the agent on completion.** When an unawaited background command finishes mid-turn, it steers a notification with the exit code and a bounded output excerpt into the agent's next decision. Fast commands that finish within `inlineSettleMs` (default 1000 ms) return their result directly in `shell_start` with no extra `shell_await`.
 
-## Measured against `bash` and 9 npm background extensions
+## Measured against `bash` and 8 npm background extensions
 
-Every row below comes from [`bench/REPORT.md`](bench/REPORT.md) (`node bench/run-bench.ts`), running real Pi SDK sessions against `bash` and the 9 most-downloaded background/shell extensions on npm (`pi-background-tasks`, `pi-better-background-tasks`, `pi-background`, `pi-patty-bg-tasks`, `pi-async`, `@tduyng/pi-shell`, `pi-shell-jobs`, `pi-exec-command`):
+Every row below comes from [`bench/REPORT.md`](bench/REPORT.md) (`node bench/run-bench.ts`), running real Pi SDK sessions against `bash` and the 8 most-downloaded background/shell extensions on npm (`pi-background-tasks`, `pi-better-background-tasks`, `pi-background`, `pi-patty-bg-tasks`, `pi-async`, `@tduyng/pi-shell`, `pi-shell-jobs`, `pi-exec-command`):
 
-| Scenario | Built-in `bash` | `pi-async-shell` | The other 9 npm extensions |
+| Scenario | Built-in `bash` | `pi-async-shell` | The other 8 npm extensions |
 |---|---|---|---|
-| **Start a dev server & know it is ready** | Blocks forever | **1 call** (`1.29 s` via output-pattern wait) | 6 extensions need **7–8 polling calls**; 2 wait `5.3 s` / `30.3 s` |
-| **Find the answer in a 2.5 s noisy command** | `11,913 B` into model context | **`679 B` into model context** (via `shell_read` grep) | 6 extensions pour `6.4 KB–17.4 KB` into context; only 1 other has log grep |
-| **Answer a `[y/N]` prompt after 4,000 lines** | Cannot send stdin | **Answered in `346 ms`** (`binding: "pty"` + `shell_send`) | 5 fail (no stdin); 2 take `5.4 s` / `30.3 s`; only 1 pipe tool answers fast |
-| **Recover log output after Pi is killed & restarted** | Lost (`0/40` lines) | **Recovered `40/40` lines** (`scope: "workspace"`) | **All 9 lose everything (`0/40` lines)** |
-| **Cancel a runaway process tree cleanly** | Only on turn abort | **Signal ladder + verified tree cleanup, log kept** | 1 has no cancel tool; 1 loses all output on cancel |
+| **Start a dev server & know it is ready** | Blocks forever | **1 call** (`1.28 s` via output-pattern wait) | 6 extensions need **7–8 polling calls**; 2 wait `5.3 s` / `30.3 s` |
+| **Find the answer in a 2.5 s noisy command** | `11,913 B` into model context | **`677 B` into model context** (via `shell_read` grep) | 6 extensions pour `6.4 KB–17.4 KB` into context; only 1 other has log grep. 2 show less (`pi-background` 573 B, `pi-patty-bg-tasks` 342 B) because they return less of the output |
+| **Answer a `[y/N]` prompt after 4,000 lines** | Cannot send stdin | **Answered in `373 ms`** (`binding: "pty"` + `shell_send`) | 5 fail (no stdin); 2 take `5.4 s` / `30.3 s`; only 1 pipe tool answers fast |
+| **A job survives a hard parent exit** | Cannot start one | **`25/25` lines** | Only `pi-patty-bg-tasks` also survives (`25/25`); the other 7 write 0–6 lines |
+| **Recover log output after Pi is killed & restarted** | Lost (`0/40` lines) | **Recovered `40/40` lines** (`scope: "workspace"`) | **All 8 lose everything (`0/40` lines)** |
+| **Cancel a runaway process tree cleanly** | Only on turn abort | **Signal ladder + no tracked process survived, log kept** | 1 has no cancel tool; 1 loses all output on cancel |
 
 See [bench/REPORT.md](bench/REPORT.md) for the full reproduction methodology, per-package numbers, and capability matrix.
 
@@ -130,7 +131,7 @@ const failures = await shell_read({
 | File | Content |
 |---|---|
 | [skills/async-shell/SKILL.md](skills/async-shell/SKILL.md) | Agent recipes: hard rules, readiness markers, PTY sessions, ownership, wait budgets. |
-| [bench/REPORT.md](bench/REPORT.md) | Reproducible benchmark against Pi's `bash` tool and nine npm background/task extensions. |
+| [bench/REPORT.md](bench/REPORT.md) | Reproducible benchmark against Pi's `bash` tool and eight npm background/task extensions. |
 | [docs/implementation-notes.md](docs/implementation-notes.md) | Runtime architecture, on-disk storage, log cap, garbage collection, known limits. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, `pnpm verify`, running benchmarks, release steps. |
 | [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | Release history and vulnerability reporting. |

@@ -41,6 +41,9 @@ A decision is never deleted. Mark it superseded and record what replaced it.
 | [0002](0002-retire-the-turn-scope.md) | Retire the `turn` scope and its settle-time forced kill | Accepted |
 | [0003](0003-universal-detached-pipe-supervisor.md) | One detached pipe supervisor for both scopes | Accepted |
 | [0004](0004-remove-the-pane-binding-and-shell-attach.md) | Remove the `pane` binding and `shell_attach` | Accepted |
+| [0005](0005-pty-wrapper-foreground-signal-disposition.md) | Run `script(1)` in the foreground of the PTY wrapper | Accepted |
+| [0006](0006-retire-session-promotion.md) | Retire the `to: "session"` promotion direction | Accepted |
+| [0007](0007-bound-the-pty-recording-without-touching-the-process.md) | Bound a `pty` recording with a writer, not with `script(1)` | Accepted |
 
 ADR 0001 to 0004 are backfilled. They record decisions the design series already
 carries, written down as decisions so that the design no longer has to explain

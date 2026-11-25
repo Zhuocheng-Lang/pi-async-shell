@@ -77,7 +77,7 @@ The suite starts real processes and a real Pi SDK session driven by a faux provi
 | Link check | `pnpm run docs:links` | `lychee` on `PATH` | Does every relative link and every `#anchor` resolve |
 | Model | see `spec/README.md` | `npx @informalsystems/quint` | Does an ownership or delivery invariant survive an interleaving nobody wrote a test for |
 
-`pnpm verify` runs the first one, because it needs nothing but Node. CI runs all four as a separate `docs` job. Run `pnpm run docs` when you touch `docs/` and you have the two binaries; run `pnpm run check:docs` otherwise, and let CI do the rest.
+`pnpm verify` runs the first one, because it needs nothing but Node. CI runs the three that `pnpm run docs` assembles — contract, prose and links — as a separate `docs` job. The Quint model is not in CI: it needs `npx @informalsystems/quint`, so it is run by hand from `spec/README.md` against the contract it models. Run `pnpm run docs` when you touch `docs/` and you have the two binaries; run `pnpm run check:docs` otherwise, and let CI do the rest.
 
 ### Which file takes what
 

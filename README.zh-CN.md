@@ -22,17 +22,18 @@ Pi 内置的 `bash` 工具会一直阻塞到进程退出，无法启动常驻开
 - **活过 Pi 崩溃与重启。** `scope: "workspace"` 任务独立于 Pi 进程存活，后续会话启动后会自动接管并保留完整日志历史。`shell_promote` 可将正在运行的 session 任务原地提升为 workspace 所有权，无需重启进程，也不丢任何输出。
 - **完成通知主动唤醒 Agent。** 未被同步等待的后台命令在轮次中途结束时，会在下一次 LLM 决策前自动送达一条含退出码与输出摘录的通知。而在 `inlineSettleMs`（默认 1000 ms）内快速结束的命令，会在 `shell_start` 当次调用中直接带回结果，无需额外调用 `shell_await`。
 
-## 与内置 `bash` 及 9 个 npm 后台扩展的实测对比
+## 与内置 `bash` 及 8 个 npm 后台扩展的实测对比
 
-以下数据全部来自 [`bench/REPORT.md`](bench/REPORT.md)（由 `node bench/run-bench.ts` 在真实 Pi SDK 会话中实测生成），横向对比内置 `bash` 与 npm 上下载量最高的 9 个后台/Shell 扩展（`pi-background-tasks`、`pi-better-background-tasks`、`pi-background`、`pi-patty-bg-tasks`、`pi-async`、`@tduyng/pi-shell`、`pi-shell-jobs`、`pi-exec-command`）：
+以下数据全部来自 [`bench/REPORT.md`](bench/REPORT.md)（由 `node bench/run-bench.ts` 在真实 Pi SDK 会话中实测生成），横向对比内置 `bash` 与 npm 上下载量最高的 8 个后台/Shell 扩展（`pi-background-tasks`、`pi-better-background-tasks`、`pi-background`、`pi-patty-bg-tasks`、`pi-async`、`@tduyng/pi-shell`、`pi-shell-jobs`、`pi-exec-command`）：
 
-| 实测场景 | 内置 `bash` | `pi-async-shell` | 其余 9 个 npm 后台扩展 |
+| 实测场景 | 内置 `bash` | `pi-async-shell` | 其余 8 个 npm 后台扩展 |
 |---|---|---|---|
-| **启动 Dev Server 并确认端口就绪** | 永久阻塞 | **1 次调用**（通过输出正则等待，耗时 `1.29 s`） | 6 个扩展需 **7–8 次轮询调用**；2 个固定盲等 `5.3 s` / `30.3 s` |
-| **从 2.5 s 嘈杂命令中提取结果** | 灌入上下文 `11,913 B` | **仅 `679 B` 进入上下文**（通过 `shell_read` grep） | 6 个扩展向模型灌入 `6.4 KB–17.4 KB`；仅 1 个其他扩展支持日志 grep |
-| **在 4,000 行输出后回答 `[y/N]` 提问** | 无法写入 stdin | **`346 ms` 完成回答**（`binding: "pty"` + `shell_send`） | 5 个因无 stdin 直接失败；2 个耗时 `5.4 s` / `30.3 s`; 仅 1 个 pipe 工具能快速回答 |
-| **Pi 被杀并重启后找回日志输出** | 全部丢失（`0/40` 行） | **完整恢复 `40/40` 行**（`scope: "workspace"`） | **其余 9 个扩展全部归零（`0/40` 行）** |
-| **清理失控进程树并保留已有日志** | 仅在轮次中止时强杀 | **信号阶梯优雅退场 + 验证进程树清空 + 日志可读** | 1 个无取消工具；1 个取消后丢失全部输出 |
+| **启动 Dev Server 并确认端口就绪** | 永久阻塞 | **1 次调用**（通过输出正则等待，耗时 `1.28 s`） | 6 个扩展需 **7–8 次轮询调用**；2 个固定盲等 `5.3 s` / `30.3 s` |
+| **从 2.5 s 嘈杂命令中提取结果** | 灌入上下文 `11,913 B` | **仅 `677 B` 进入上下文**（通过 `shell_read` grep） | 6 个扩展向模型灌入 `6.4 KB–17.4 KB`；仅 1 个其他扩展支持日志 grep。2 个更少（`pi-background` 573 B、`pi-patty-bg-tasks` 342 B），因为它们返回的输出更少 |
+| **在 4,000 行输出后回答 `[y/N]` 提问** | 无法写入 stdin | **`373 ms` 完成回答**（`binding: "pty"` + `shell_send`） | 5 个因无 stdin 直接失败；2 个耗时 `5.4 s` / `30.3 s`; 仅 1 个 pipe 工具能快速回答 |
+| **任务在父进程硬退出后存活** | 无法启动 | **`25/25` 行** | 仅 `pi-patty-bg-tasks` 同样存活（`25/25`）；其余 7 个只写出 0–6 行 |
+| **Pi 被杀并重启后找回日志输出** | 全部丢失（`0/40` 行） | **完整恢复 `40/40` 行**（`scope: "workspace"`） | **其余 8 个扩展全部归零（`0/40` 行）** |
+| **清理失控进程树并保留已有日志** | 仅在轮次中止时强杀 | **信号阶梯优雅退场 + 无受追踪进程存活 + 日志可读** | 1 个无取消工具；1 个取消后丢失全部输出 |
 
 完整的测试方法、各包逐项耗时及能力矩阵见 [bench/REPORT.md](bench/REPORT.md)。
 
@@ -130,7 +131,7 @@ const failures = await shell_read({
 | 文件 | 内容 |
 |---|---|
 | [skills/async-shell/SKILL.md](skills/async-shell/SKILL.md) | Agent 工作流规范：硬性规则、就绪标记、PTY 会话、所有权选择与等待时间预算。 |
-| [bench/REPORT.md](bench/REPORT.md) | 与 Pi 内置 `bash` 及九个 npm 后台/任务扩展的可复现基准测试报告。 |
+| [bench/REPORT.md](bench/REPORT.md) | 与 Pi 内置 `bash` 及八个 npm 后台/任务扩展的可复现基准测试报告。 |
 | [docs/implementation-notes.md](docs/implementation-notes.md) | 运行时架构、磁盘存储结构、日志上限、垃圾回收与已知限制。 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境搭建、`pnpm verify`、运行基准测试与发版流程。 |
 | [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | 版本变更历史与安全漏洞报告方式。 |

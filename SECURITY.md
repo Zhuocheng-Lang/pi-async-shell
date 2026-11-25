@@ -32,7 +32,7 @@ pi-async-shell runs commands with the permissions of the user who started Pi. It
 - **Cancellation is not rollback.** A cancelled command keeps whatever it already wrote to disk or to a remote system.
 - **Runtime state is plaintext on disk.** `.pi/async-shell/` holds full command output, including anything a command printed. The extension writes a local `.gitignore` containing `*`, which prevents an accidental commit, not a reader.
 - **Workspace executions outlive Pi.** A `scope: "workspace"` execution keeps running after Pi exits, by design, and a later Pi process can adopt it.
-- **The protected-paths integration is a local extension hook.** It blocks obvious writes to `.env*`, `.git/`, `.jj/`, `node_modules/` and `~/.ssh/` from `shell_start` commands and `shell_send` input. It guards against mistakes; it is not an enforced boundary.
+- **This package ships no path guard.** A `protected-paths` extension installed in the local Pi configuration blocks obvious writes to `.env*`, `.git/`, `.jj/`, `node_modules/` and `~/.ssh/` for the `write`, `edit` and `bash` tools. It does not see `shell_start` commands or `shell_send` input, because those go through this package's own spawn path. Nothing here is an enforced boundary either way.
 
 ## In scope
 

@@ -4,6 +4,9 @@ applies_to: 0.2.2
 tracks:
   - src/core/registry.ts
   - src/core/log-manager.ts
+  - src/core/pattern.ts
+  - src/core/spawn.ts
+  - src/core/paths.ts
   - src/extension.ts
 ---
 
@@ -31,7 +34,9 @@ src/extension.ts            Pi wiring: 7 tools, lifecycle hooks, /async-shell, f
 src/core/registry.ts        handles, scopes, waiters, completion, cancel ladder, adoption, GC
 src/core/spawn.ts           the two spawn recipes, the PTY wrapper, environment filtering
 src/core/pipe-supervisor.mjs detached pipe owner: file logs, cap, fd 3 watch, exit record
+src/core/recording-writer.mjs bounded pty recording: drain, append to the cap, drop the rest
 src/core/log-manager.ts     durable output, sparse line index, drain-not-kill cap, read modes
+src/core/pattern.ts         the bounded pattern compiler shared by grep and await
 src/core/screen.ts          terminal replay: escape parsing, cursor addressing, viewport
 src/core/containment.ts     tag + identity + group fence, group signalling, absence verification
 src/core/identity.ts        boot id, /proc/<pid>/stat field 22, descendant walk, tag and group scans
@@ -70,7 +75,7 @@ Contract-to-evidence map:
 | C3 — completion is an event, not a poll | `extension-e2e.test.ts` ("three completions coalesce into one message") |
 | A settle is reported once | `extension-e2e.test.ts` ("a command that settles inside the start call returns its result there", "an await that reports the settle does not announce it again", "an await in mode all holds a sibling's settle until both are reported", "an aborted await hands its held settle back to the completion channel", "a command that outlives the inline window keeps the handle and still notifies", "inlineSettleMs: 0 returns at once and leaves the completion channel alone", "inline settle handles undefined and aborted signals without losing notifications") |
 | C4 — cancellation ladder + verification | `registry.test.ts` ("cancel proves the tree is gone, including a setsid escapee", "the fence reaches a child that cleared its env and lost its parent", "graceful cancel uses SIGTERM before the fence") |
-| C5 — drain, never stop reading | `registry.test.ts` ("the session pipe log cap drains instead of killing or blocking the child", "the workspace pipe log cap drains instead of killing or blocking the child") |
+| C5 — drain, never stop reading | `registry.test.ts` ("the session pipe log cap drains instead of killing or blocking the child", "the workspace pipe log cap drains instead of killing or blocking the child"), `pty.test.ts` ("a pty recording stops at the log cap without killing the command") |
 | C6 — `(boot_id, pid, start)` identity | `workspace.test.ts` ("an unprovable workspace record becomes lost, never completed"), `identity.ts` |
 | C7 — terminal interaction never changes semantics | `pty.test.ts` ("ptyView is the rendered screen, not the raw stream"), `screen.test.ts` (ten cases) |
 | C8 — replay safety is declared | `registry.test.ts` ("a request id makes shell_start replay-safe"), `pty.test.ts` ("a request id makes shell_send replay-safe") |
@@ -135,7 +140,7 @@ The design describes a list plus per-handle actions. 0.2.0 renders the list thro
 
 The first `pty` recipe spawned `script` with three pipes owned by Pi. That made the PTY a child of the Pi process in every way that matters. A `kill -9` left `script` and its grandchild alive with their output silently discarded. No later Pi process could reach them. The old design text turned that accident into a rule ("a PTY master cannot outlive Pi"), which was wrong.
 
-The recipe now binds `script`'s stdout to `combined.log`. The child gets a FIFO for stdin, held open read-write by the wrapper. The whole tree runs in its own session. Nothing in the data path belongs to Pi. The execution therefore survives a hard exit, and a later Pi process can still type into it. Two details separate working from silently broken. The launcher applies the size recorded at spawn time (`stty rows/cols`), because a FIFO stdin leaves the slave at `0 0`. The backgrounded `script` job resets SIGINT/SIGQUIT, because a background job inherits them ignored and ^C would otherwise never reach the child.
+The recipe now binds `script`'s stdout to a bounded writer that writes `combined.log`. The child gets a FIFO for stdin, held open read-write by the wrapper. The whole tree runs in its own session. Nothing in the data path belongs to Pi. The execution therefore survives a hard exit, and a later Pi process can still type into it. Two details separate working from silently broken. The launcher applies the size recorded at spawn time (`stty rows/cols`), because a FIFO stdin leaves the slave at `0 0`. The backgrounded `script` job resets SIGINT/SIGQUIT, because a background job inherits them ignored and ^C would otherwise never reach the child.
 
 ### 3.10 Adoption requires the writer lock
 
@@ -177,6 +182,60 @@ By host convention, `content` is what the model reads and `structuredContent` is
 
 Evidence: `extension-e2e.test.ts` — "oversized wait and inline-settle values are clamped with a visible note", "an expired wait carries its guidance in structured content".
 
+### 3.16 A terminal keeps the signal dispositions its command was born with
+
+The PTY wrapper runs `script(1)` in the foreground. That placement is the whole
+mechanism, not a style choice. POSIX sets SIGINT and SIGQUIT to `SIG_IGN` in the
+child of an asynchronous list, and a non-interactive shell cannot reset a signal
+it inherited as ignored: in `dash`, which is `/bin/sh` on Debian and Ubuntu,
+`trap - INT QUIT` is a no-op. A backgrounded `script` therefore hands every
+process under the terminal an `^C` it cannot take. The byte still travels: it
+reaches the line discipline, the recording shows the echoed `^C`, and the
+foreground process group stays alive. A graceful cancel then has nothing left but
+the grace period, so it always costs the full `graceMs` before the escalation.
+
+Only the owner watcher is asynchronous now. It runs `kill` and nothing else, so
+the disposition it inherits cannot reach a command. The wrapper traps SIGTERM so
+that a group signal cannot take it down before it seals `exit.json`; a trap does
+not propagate to children, which keep the default. The watcher is stopped with
+SIGKILL rather than SIGTERM, because SIGTERM is the signal that means "the owner
+is gone", and a cleanup that used it once looked exactly like owner loss.
+
+Evidence: `pty.test.ts` — "a pty does not hand its command an ignored SIGINT", "a pty cancel interrupts the terminal instead of waiting out the grace period"; `pty-durability.test.ts` — "a workspace pty survives a hard Pi exit and is re-adopted".
+
+### 3.17 A record is only replayed for the key and the tool that wrote it
+
+A `request` key becomes a file name, and the sanitizer is lossy: `"build one"`
+and `"build/one"` both reduce to `build_one`. Replaying on the sanitized name
+alone would answer the second call with the first call's handle, so the command
+never runs and the tool reports success. A key the sanitizer changed therefore
+carries a digest of the exact string the caller passed. The tool is part of the
+name as well, because `shell_start` and `shell_send` share one key space and a
+start record must never answer for a keystroke.
+
+Evidence: `registry.test.ts` — "two request keys that sanitize alike stay two executions"; `pty.test.ts` — "a start request key and a send request key are separate namespaces".
+
+### 3.18 A pty recording is bounded by a writer, not by `script(1)`
+
+`script(1)` used to write the recording into `combined.log` itself, so the file
+grew for as long as the terminal ran. util-linux has a limit of its own, and it
+was measured before it was rejected: `--output-limit` ends the session at the
+limit, so the command dies with the recording and the exit code reports a full
+disk as a command failure. That is the one thing C5 forbids.
+
+The recording therefore passes through `src/core/recording-writer.mjs`. The
+writer reads without stopping, appends at most `maxLogBytes`, drops the rest and
+writes `log-cap.json` — the same file, the same cap and the same meaning the pipe
+supervisor gives them. `script`'s status travels out of the pipeline through
+`$d/script.rc`, because POSIX reports the last stage of a pipeline, and the
+writer's own status never decides the execution's status.
+
+The retained bytes are the beginning of the recording. A prefix keeps every byte
+offset the line index has cached, which front truncation and rotation would both
+break, and it matches the pipe path, which keeps the head and drops the tail too.
+
+Evidence: `pty.test.ts` — "a pty recording stops at the log cap without killing the command"; `pty-durability.test.ts` — "an unpromoted session pty stops when its owner is killed".
+
 ---
 
 ## 4. Known limits of 0.2.0
@@ -185,13 +244,16 @@ Evidence: `extension-e2e.test.ts` — "oversized wait and inline-settle values a
 - **The writer lock is advisory.** The lock uses `O_EXCL` plus a liveness check on the holder's identity. A process that ignores the lock can still write.
 - **`pty` has no separate stderr.** A PTY is one stream. `stderr.log` stays empty, and `shell_read` says so.
 - **A `pty`'s `combined.log` is the terminal recording.** The child owns a real PTY. The file therefore carries CRLF and echoed input rather than the child's raw bytes. Reads normalize CRLF. `stripAnsi: false` returns the recording verbatim.
-- **The pipe cap does not apply to a `pty` recording.** `script(1)` writes the file directly. There is no pipe to pause and no writer to stop, so the file grows. Nothing kills the process. Nothing bounds the file either. For a long-lived, verbose PTY program, use `timeoutSeconds` and storage monitoring.
+- **A `pty` recording is capped by a writer, and a capped recording is a prefix.** `PI_ASYNC_SHELL_MAX_LOG_BYTES` (default 100 MiB) bounds `combined.log` on both bindings, and neither binding kills the process at the cap. For a `pty`, a writer between `script(1)` and the file appends up to the cap and then discards, so the retained bytes are the first ones the terminal produced. After `capReached`, `mode: "tail"` and `ptyView` describe the end of that prefix, not the end of the program's output. `util-linux`'s `--output-limit` would bound the file too, by ending the session at the limit; that is why it is not used.
 - **`ptyView` is a viewport, not a scrollback.** The replay window is the tail of the recording (256 KiB minimum). The screen model omits wide characters and the alternate screen buffer. A TUI that paints with wide glyphs can render narrower than the real terminal did.
 - **A `workspace` handle without an exit record and without provable liveness is `lost`.** It is never reported as `completed`.
 - **Containment has a detection floor.** The fence unions three views: environment tag, ppid tree, and owned process groups. A child that runs `env -i` and outlives its parent is still found. One case stays out of reach: a child that also calls `setsid(2)` between scans. It has no tag, no parent edge, and no group of ours.
 - **`shell_await` blocks the tool call.** A tool call cannot be suspended here. A long wait therefore ends the turn and lets the completion message resume it. `waitMs` defaults to 30 s and caps at 50 s.
 - **A wait starts only when a later action depends on its outcome.** Every wake-up this package can deliver comes from an execution that settled, so an external refresh — a registry index, a CDN cache, a CI queue — has no event to wait on. The prompt guidelines and the skill ask for the causal test before any wait: when nothing later in the task needs the new state, the verified result is the answer, and a poll and a watcher are both waste. When something does depend on it, one command that exits on the change, with `timeoutSeconds`, plus one `shell_await` is the whole mechanism; a second blocking await only spends the turn.
 - **Completion coalescing uses a fixed 150 ms idle window.** Three commands that settle together produce one wake-up. The window does not adapt.
+- **A pattern match runs on the main thread.** `shell_read` `mode: "grep"` and `shell_await` `until.kind: "pattern"` compile and run a JavaScript regular expression in the event loop, and Node cannot interrupt one. The guard rejects a source longer than 512 characters and a quantifier applied to a group that already repeats, which is the shape the classic blowups need. It is a floor, not a proof: a pattern under both limits that avoids the nested form can still be quadratic on a very large log.
+- **A `pty` records one stream.** `stderr.log` stays empty, because `script(1)` writes everything into one recording. Both the read and the wait map `stderr` onto `combined` and say so, rather than opening an empty file: a wait on a file that can never grow can only expire.
+- **Runtime state is owner-only.** `.pi/async-shell` and the directories under it are created `0700`, the FIFO `0600`, and the log files `0600`. The mode is not a boundary against a process running as the same user, and a runtime root on a filesystem without POSIX modes keeps whatever it has.
 - **The credential filter is a default, not a guarantee.** The filter misses an unusually named variable. It also misses a secret on a command line.
 
 ---
@@ -200,13 +262,13 @@ Evidence: `extension-e2e.test.ts` — "oversized wait and inline-settle values a
 
 Full report: [`bench/REPORT.md`](../bench/REPORT.md). Each implementation loads alone into a real Pi SDK session, and the harness invokes its registered tools directly. The numbers therefore compare the implementations rather than a model. The field holds Pi's built-in `bash`, `pi-async-shell`, and eight packages: `pi-background-tasks@2.6.10`, `pi-better-background-tasks@0.18.0`, `pi-background@0.4.4`, `pi-patty-bg-tasks@1.1.6`, `pi-async@0.4.4`, `@tduyng/pi-shell@0.0.6`, `pi-shell-jobs@0.1.2`, and `pi-exec-command@0.3.10`.
 
-The first table asks what someone adopting this would notice. The second asks why the difference exists. Both quote the committed run.
+The first table asks what someone adopting this would notice. The second asks why the difference exists. Both quote the committed run, generated on 2026-11-25 by `node bench/run-bench.ts` against `@earendil-works/pi-coding-agent@1.5.2`, with a load average of 3.74 when the run started. It is a run of the code in this repository, so the `pi-async-shell` rows include `inlineSettleMs` and pipeline status.
 
 | What a user gets | pi-async-shell | pi-background-tasks |
 |---|---|---|
 | A dev server started in one turn answers in the next | yes, 1 call to know it is ready | yes, 8 log polls |
 | A prompt after a 4000-line burst can be answered | yes, PTY, answered | no, prompt visible, no stdin |
-| One 2.5 s command: time, context, calls to the answer | 2535.5 ms, 679 B, 3 calls | 2519.7 ms, 12.9 KB, 3 calls |
+| One 2.5 s command: time, context, calls to the answer | 2569.1 ms, 677 B, 3 calls | 2537.5 ms, 12.9 KB, 3 calls |
 | Cancel a runaway: output kept, nothing left running | yes, 0 leftovers | yes, 0 leftovers |
 | Output recovered after the agent is killed and restarted | yes, 40/40 lines | no, no handle, no log |
 | A task survives a hard parent exit | yes, 25/25 lines | no, 4/25 lines |
@@ -215,8 +277,8 @@ The first table asks what someone adopting this would notice. The second asks wh
 |---|---|---|
 | In-turn causal barrier | yes (0 turn boundaries) | no (1 turn boundary) |
 | 30 MiB log does not kill the process | yes, 31.4 MB logged | no, killed at 20 MiB |
-| One line of a 200k-line log is reachable | yes, 363 bytes, 1 call | no, 102 KB, 2 calls |
-| Three parallel commands overlap | yes, 447 ms | yes, 426 ms |
+| One line of a 200k-line log is reachable | yes, 362 bytes, 1 call | no, 102 KB, 2 calls |
+| Three parallel commands overlap | yes, 455 ms | yes, 433 ms |
 
 Two rows are not a contest, and the report says so. Both implementations leave nothing running after a cancel. Both keep a dev server reachable across a turn boundary. What differs in the dev-server row is the cost of knowing the server is up, not whether it works. `patty` also survives a hard parent exit (25/25 lines). It is the only other package in the field that does.
 
@@ -224,11 +286,11 @@ The harness measures admission latency after one unmeasured warmup call. The per
 
 | Admission | pi-async-shell | pi-background-tasks | pi-better-background-tasks |
 |---|---|---|---|
-| median | 1.6 ms | 3.1 ms | 96.3 ms |
-| p95 | 2.1 ms | 3.5 ms | 118 ms |
-| first call in the process | 1.5 ms | 2.1 ms | 100 ms |
+| median | 6.5 ms | 8.0 ms | 114.2 ms |
+| p95 | 9.0 ms | 9.6 ms | 128.6 ms |
+| first call in the process | 6.5 ms | 7.7 ms | 109.6 ms |
 
-The median is the stable number, and even it moves with machine load. The committed report quotes the run it came from. The first call in a process is module loading and JIT, not admission.
+The median is the stable number, and even it moves with machine load. The committed run started at a load average of 3.74 and recorded 6.5 ms for `pi-async-shell`; the same build measured separately, with no other benchmark work running, recorded a 3.3 ms median in each of three rounds of the same ten samples. The report quotes the run it came from, and the load it started under, rather than the friendlier number. The first call in a process is module loading and JIT, not admission.
 
 ---
 
@@ -265,4 +327,4 @@ The median is the stable number, and even it moves with machine load. The commit
 - Timeout and cancellation waits observe finalized cleanup rather than premature terminal labels or supervisor exit records.
 - Promoted executions retain durable metadata and workspace adoption links.
 - Long-lived children no longer inherit common LLM keys, tokens, and credential variables by default.
-- The local protected-paths integration covers `shell_start` commands and `shell_send` PTY input as well as `bash` redirections.
+- The `protected-paths` extension in this machine's global Pi extensions covers `bash` redirections. It is a local extension, not part of this package, and it does not see `shell_start` commands or `shell_send` input.

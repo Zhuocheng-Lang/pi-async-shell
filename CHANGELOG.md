@@ -6,12 +6,39 @@ All notable changes to pi-async-shell are documented here. The format follows Ke
 
 ### Changed
 
+- A `pty` recording is bounded by the same cap as a pipe log. `script(1)` wrote `combined.log` itself, so the file grew for as long as the terminal ran; the recording now passes through `src/core/recording-writer.mjs`, which keeps reading, appends at most `PI_ASYNC_SHELL_MAX_LOG_BYTES`, drops the rest and writes `log-cap.json`. util-linux's own `--output-limit` was measured first and rejected: it ends the session at the limit, so a full log would have become a failed command. The retained bytes are the beginning of the recording, which is what keeps the cached byte offsets in the line index valid; after `capReached`, a tail read describes the end of that prefix (ADR 0007).
+- `shell_promote` `to` accepts `workspace` alone, and omitting it performs the same move. `to: "session"` was an accepted no-op write on a session execution and a refusal on a workspace one, so the only other value the type offered was the one direction the model forbids. The schema now offers `workspace`, the registry refuses `session` with the reason, and a repeated `shell_promote` on a workspace execution still returns its handle unchanged (ADR 0006).
+- Tool parameters are typed from their own schemas. Seven handlers forwarded `params as never` into registry methods typed with the `Shell*Params` types, which is where a schema that drifted from the registry would have gone unnoticed. `StringEnum` now returns a schema whose TypeBox static type is the literal union, carried by a hidden `~` property, so the JSON that reaches the model is byte-identical; `agent_before_settle` builds `SessionBoundaryDraft[]` instead of casting its result. `src/extension.ts` contains no `as never`.
+- The benchmark vendor manifest pins all eight competitors. `pi-background-tasks` was read from the machine's global Pi store, so the field depended on whatever that machine happened to have installed; it is now `pi-background-tasks@2.6.10` in `bench/vendors`, loaded through the entry the package declares for itself. `bench/vendors/pnpm-workspace.yaml` also rewrites the three `file:` subdependencies that `pi-exec-command@0.3.10` publishes, which pnpm 11.29 and later refuse with `ERR_PNPM_LOCAL_SUBDEP_NOT_ALLOWED`; each override names the version the tarball already bundles, so the installed code is unchanged.
+- `bench/REPORT.md` is a run of the current code, generated 2026-11-25. The previous report was dated 2026-11-17, before `inlineSettleMs` and before pipeline status, and both READMEs and §5 of the implementation notes quoted it. The environment block also records the Pi SDK versions that were actually loaded, which are not the `pi` on `PATH`, and the load average at the start of the run, because admission latency follows machine load: this run measured a 6.5 ms median at a load average of 3.74, and the same build measured 3.3 ms when nothing else was running. Every number in `bench/REPORT.md`, both READMEs and §5 comes from this one run.
+- Nearly every tool argument carries a `description`. `binding`, `scope`, `keys`, `request`, `graceMs` and the read offsets could only be inferred from the prose guidelines, so a caller had to read 14 KB of them to learn what a parameter accepts.
+- The documentation no longer claims a `protected-paths` integration this package does not contain. The hook belongs to the local Pi configuration, it covers the `bash` tool alone, and `SECURITY.md` listed it as a guard this package provides. Both READMEs also counted the benchmark field as nine extensions while the report, the commit and `implementation-notes.md` §5 count eight, and the comparison table left out the two rows where `pi-patty-bg-tasks` matches or beats this package. §5 now quotes the committed run's numbers instead of a different run's.
 - The prompt guidelines and the bundled skill ask whether a later action depends on the external state before any wait starts. Nothing here wakes a turn for a bare condition, so the earlier shape of the rule — start one watcher that exits when the state changes, end the turn — invited a watcher for a refresh that no later action needed, such as a registry index after a publish that had already succeeded. The rule now says to report what is verified and stop in that case, and to start one watcher only when a later action depends on it, await it once, then end the turn. The skill also tells a `codemode` caller to read `settled`, `timedOutWaiting` and `note`, not `outcomes` alone.
 
 ### Fixed
 
+- The changelog record for `0.2.0-beta.1` said the version was never published. The registry says otherwise: `npm view pi-async-shell time` carries `0.2.0-beta.1` at 2026-11-20T08:28:53Z, and its tarball still downloads. The staged upload reported itself wedged, and the version was published minutes after the `0.0.0-stage` placeholder that the staged flow leaves behind.
 - `shell_start` and `shell_await` put their note in structured content as well as in the text result. A `codemode` script reads `structuredContent`, so a clamped `waitMs` or `inlineSettleMs`, and the end-the-turn guidance after a full-length wait, never reached it: the wait looked bounded for no stated reason, and the instruction that follows a full-length wait was lost.
 - A settle that `shell_await` reports is no longer announced a second time, including while the call still waits on another handle. The settle reaches the completion channel before the await can observe it, so every awaited run also produced a completion message, and a caller that already read the outcome paid for the same result twice. A wait now claims the ids it reports before it waits, which holds their records instead of announcing them: the call consumes the terminal outcomes it delivers, and hands anything it did not report back to the completion channel. An aborted call claims nothing, because its outcome may never reach the model, and a workspace record that an await consumed is no longer surfaced at the next `session_start`.
+- A `pty` command keeps the signal dispositions it started with. `script(1)` now runs in the foreground of the wrapper, so SIGINT and SIGQUIT are no longer `SIG_IGN` inside the recorded terminal. POSIX sets them to ignored in the child of an asynchronous list and a non-interactive shell cannot reset what it inherited as ignored: on a host whose `/bin/sh` is `dash`, which is Debian and Ubuntu, `^C` reached the line discipline and the recording but never the foreground process group, and a graceful cancel could only wait out `graceMs` and escalate. Only the owner watcher is asynchronous now, it stops on SIGKILL rather than on the signal that means owner loss, and the wrapper traps SIGTERM so a group signal cannot take it down before it seals `exit.json`.
+- A `pty` starts in a workspace whose path contains a space. The launcher path travels in `PI_ASYNC_SHELL_EXEC_DIR` instead of being pasted unquoted into `script -c`.
+- `shell_read` and `shell_await` agree on what a `pty` records. `stderr` used to name an empty file: a read returned nothing and a pattern wait spent its whole budget on a file that cannot grow. Both map the request onto `combined` and say so in the note.
+- Two `request` keys that sanitize alike stay two executions. `"build one"` and `"build/one"` both reduced to `build_one`, so the second `shell_start` returned the first handle and never ran its command while reporting success. A key the sanitizer changed now carries a digest of the exact string, and the record's tool is part of its name, so a start record cannot answer for a keystroke.
+- `shell_send` `keys` accepts the spellings the documentation uses — `Ctrl+C`, `ctrl c`, `CTRL+C`, `PageUp`, `F5` — and refuses a name it does not know. An unknown name used to be written as literal text and reported as `wrote: true`, which reads as a delivered keystroke the program ignored.
+- `shell_cancel` and both READMEs say "no tracked process survived" instead of "tree verified gone". The fence unions three views — environment tag, ppid tree, owned process groups — and a child that calls `setsid(2)` between scans stays out of reach, so the prose now claims exactly what the check delivers; the structured field keeps the name `verifiedGone`, and a leaked pid is still reported as a leak.
+- A record write that fails inside `finalize` reports a diagnostic instead of raising an unhandled rejection. A full disk, a removed record directory or a permission change took the whole Pi process down, and with it every other execution.
+- `shell_read` `mode: "grep"` and `shell_await` `until.kind: "pattern"` match a character that straddles a read chunk. The scan decodes through `StringDecoder` and the wait's delta read stops on a character boundary, so a line holding a multi-byte character is no longer invisible to a pattern that spans the boundary.
+- A pattern that can backtrack catastrophically is refused before it runs. The source is limited to 512 characters and a quantifier applied to a group that already repeats is rejected. The match still runs on the main thread, so §4 of the implementation notes records this as a floor.
+- `shell_cancel` `graceMs` is clamped to 30000 like every other wait, and an empty `sessions/<id>-<pid>/` directory is collected once it is older than the retention window. A process that never ran a command left its directory behind for good, and every workspace scan walked it.
+
+### Removed
+
+- `LogWriter`, `processTreeSize` and `allProcessCount`. The first duplicated the pipe supervisor's cap logic and had no caller; the other two had none either.
+- The duplicate 250 ms log poll. The exit watcher already ran the same refresh, readiness check and UI update on the same interval.
+
+### Security
+
+- `.pi/async-shell` and its subdirectories are created `0700`, the stdin FIFO `0600` and the log files `0600`. `SECURITY.md` already lists another local user reading a pty recording or writing to a stdin FIFO as in scope, and the default umask did neither.
 
 ## [0.2.2] - 2026-11-23
 
@@ -97,7 +124,7 @@ The version number stops being a prerelease, so npm's `latest` points at it and 
 
 ## [0.2.0-beta.1] - 2026-11-17
 
-_Never published: the npm registry accepted the upload as staged and then wedged the version number (npm/cli#9889). 0.2.0-beta.2 carries this section's content._
+_Published. This note said the opposite, and the registry disagrees: `npm view pi-async-shell time` records `0.0.0-stage` at 2026-11-20T08:25:45Z and `0.2.0-beta.1` at 2026-11-20T08:28:53Z, and the tarball still downloads. The staged upload reported itself wedged (npm/cli#9889), yet it landed three minutes after the placeholder. `0.0.0-stage` is that placeholder, 365 bytes with `"stub": true` and no code in it, not a release. `0.2.0-beta.2` followed with the same tree: the two tarballs differ only in `package.json` and `CHANGELOG.md`._
 
 ### Added
 
@@ -120,7 +147,7 @@ _Never published: the npm registry accepted the upload as staged and then wedged
 ### Removed
 
 - scope turn, its agent_before_settle forced cancellation, and async-shell-error continuation injection.
-- shell_start.readiness and the turn-only cancelOnFirstFailure option.
+- `shell_start.readiness` and the turn-only `cancelOnFirstFailure` option.
 
 ### Fixed
 
@@ -131,7 +158,7 @@ _Never published: the npm registry accepted the upload as staged and then wedged
 ### Security
 
 - Long-lived children no longer inherit common LLM keys, tokens, and credential variables by default.
-- The local protected-paths integration covers shell_start commands and shell_send PTY input as well as bash redirections.
+- The `protected-paths` extension in the local Pi configuration covers `bash` redirections. It is a local extension and never covered this package's commands, which spawn through their own supervisor.
 
 [Unreleased]: https://github.com/Zhuocheng-Lang/pi-async-shell/compare/v0.2.2...HEAD
 [0.2.2]: https://github.com/Zhuocheng-Lang/pi-async-shell/releases/tag/v0.2.2
