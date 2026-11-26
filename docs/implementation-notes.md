@@ -275,7 +275,71 @@ The centre did not move, and the matrix says so: `registry.ts` still has
 fan-out 12 and `extension.ts` still reaches 19 of 22 modules. Both are
 orchestrators. Splitting them further is not a refactor — the state machine, the
 write lock and the adoption path share one invariant — so `docs/rfcs/` is where
-that starts.
+### 3.20 A pair of files is a claim the history can check
+
+`node scripts/cochange.mjs` reads the part of the tree the import graph cannot
+see: two files that changed in the same commit. It is a report and not a gate,
+like the matrix, and `pnpm cochange` runs it;
+`docs/adr/0009-read-change-coupling-from-the-history.md` records why a
+whole-tree commit is cut out and why a pair seen once stays below the threshold.
+
+The history is short enough to state in full. Forty-one commits are reachable
+from git HEAD, which is `jj log -r '::@-'` without jj's virtual root, and the
+working-copy commit is excluded because it carries a session as a single commit.
+Eighteen touch `src/`, nine of them with two or more files, and two of those
+touch most of the tree — the import and the split. The matrix therefore rests on
+nine observations, and the report says so above every table.
+
+`pnpm cochange` prints this, with eleven pairs held back by the threshold:
+
+| A | B | n | P(B given A) | P(A given B) | Jaccard |
+|---|---|---|---|---|---|
+| `registry.ts` | `extension.ts` | 4 | 66.7% | 80.0% | 0.57 |
+| `types.ts` | `extension.ts` | 2 | 66.7% | 40.0% | 0.33 |
+| `registry.ts` | `types.ts` | 2 | 33.3% | 66.7% | 0.29 |
+
+The first row is the one that settles a question. Read it as the tool prints it,
+with A the first name: 66.7% of the commits that touched `registry.ts` touched
+`extension.ts`, and 80.0% of the commits that touched `extension.ts` touched
+`registry.ts`. The direction is `extension.ts` pulling `registry.ts`, so neither
+file is a thin shell over the other. Rows two and three are the same claim about
+`types.ts`: two of its three commits also touched `extension.ts` and two also
+touched `registry.ts`, one with each and one with both, so no edit to it stood
+alone. Fan-in ten is a blast radius rather than a tidy pile of declarations.
+
+Eight pairs have no import edge between them and every one of them is a single
+commit, which is a hypothesis and not a finding. Four of them are disconnected in
+the graph, and each has a mechanism: `paths.ts` with `pipe-supervisor.mjs` (the
+runtime directory, and the mode the supervisor opens files with), `spawn.ts` with
+`recording-writer.mjs` (the symlink the wrapper is launched through), and
+`ansi.ts` with `screen.ts` (one escape grammar, parsed twice). That is the rule
+§3.19 needed: the two modules the DSM shows as isolated are the two this tree
+runs as separate processes, so an island in the import graph is not independence.
+
+`pnpm cochange --scope src,tests` adds the test coupling, and one row dominates
+it: `tests/extension-e2e.test.ts` and `src/extension.ts` changed in seven of
+seven commits, at 100% in both directions. `--max-share 1` keeps the import and
+the split, and that is how the filters were chosen: they lift three pairs to
+n=3 whose whole evidence is those two commits.
+
+`tests/cochange.test.ts` pins the machinery and not the numbers above, because a
+history that grows moves them. It states the arithmetic once — one co-change
+count in, the two rates and Jaccard out — then the three filters that decide
+which commits and which paths may make a pair, then the four names the import
+graph can give one. A rename has no instance in this history, so the test builds
+the two commits that would expose the bug, a `git mv` and an edit to the other
+file, and reads them back through the same code: without the alias rewrite the
+pair is seen once instead of twice. The stages are exported and the stages that
+read git take the repository directory, which is what makes a fixture possible;
+the CLI is spawned only for the exit codes and the two payloads, and its output
+is byte-identical before and after that change. The end-to-end tests run against
+this history and allow it to grow: they pin the rank order, the pair the table
+above leans on, and that every rate in the payload follows from the payload's own
+counts.
+
+Evidence: `cochange.test.ts` — "P(B|A), P(A|B) and Jaccard all follow from the
+one count", "a renamed file keeps one history under the name it carries today",
+"the report on this repository derives every rate from its own counts".
 
 ## 4. Known limits of 0.2.0
 

@@ -39,6 +39,7 @@ The host packages are also declared in `peerDependencies` with a `*` range, whic
 | `pnpm test` | The full suite, one test file at a time. |
 | `pnpm test:unit` | Only the `tests/*.test.ts` files. |
 | `pnpm dsm` | The import matrix over `src/`: partitioned DSM, propagation cost, feedback edges, per-module fan-in and fan-out. A report, not a gate. `--format markdown` or `--format json` for a document or a tool, `--root <dir>` for another directory. |
+| `pnpm cochange` | The change coupling matrix over `src/`: which files changed in the same commit, how often, and whether an import edge explains it. A report, not a gate. `--scope src,tests` for the test coupling, `--threshold 1` to read a pair seen once, `--max-share 1` to keep the whole-tree commits, `--format json` for a tool. |
 | `pnpm link-host` | Mirrors Pi's module store into `./node_modules` for the benchmark. |
 | `pnpm bench` | Regenerates `bench/out/results.json` and `bench/REPORT.md`. |
 | `pnpm run spec` | Type-checks the Quint model under `spec/` and simulates it: `spec:typecheck` then `spec:run`. `pnpm verify` does not call it. |
