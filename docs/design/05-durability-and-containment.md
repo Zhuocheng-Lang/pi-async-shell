@@ -58,9 +58,9 @@ Eight rows. Two were already right. One (C8) is a genuine addition. One (C10) ad
 
 Corrected, and now stated in the target host's own terms:
 
-> **Scope decides who may reap the process. The wait decides who may proceed. Ending the turn is what lets those two answers differ.**
+> **Scope decides who may reap the process. The wait decides who may proceed. Ending the turn lets those answers differ while the session stays open or a single-shot settle boundary holds a pending wake-up.**
 
-`session` scope means the conversation may end. The session still owes the execution a cleanup. `workspace` scope means even the session's exit does not end that debt. `shell_await` narrows the *wait* for one tool call. It changes neither.
+`session` scope means the turn may end while a resident session stays open and still owes the execution a cleanup. In a single-shot host (`pi -p` text or JSON), `agent_before_settle` holds live, unready `session` work with notification and triggering enabled until exit or readiness. Settled records continue the run; ready and non-waking work does not hold settlement. Final `session_shutdown` reaps every remaining `session` execution. `workspace` scope means even the session's exit does not end that debt. `shell_await` narrows the *wait* for one tool call. It changes neither.
 
 ---
 
@@ -107,7 +107,7 @@ Adopted: group **and** tag, not either. The group is the cheap graceful path. It
 - **`unknown` is a real outcome.** A `shell_start` or `shell_send` interrupted after its intent record leaves the effect unknown. The honest answer is `unknown`, never a silent duplicate.
 - **A terminal viewport is not a log.** What a terminal displayed includes overwrites and cursor addressing. It is not evidence of the byte stream.
 - **The cap is one policy on two bindings.** A `pipe` execution stops recording at `PI_ASYNC_SHELL_MAX_LOG_BYTES` and keeps draining its pipes. A `pty` recording stops growing at the same cap because a bounded writer sits between `script(1)` and the file, and that writer keeps reading. Nothing kills the process in either case, and `util-linux`'s own `--output-limit`, which would, was rejected (ADR 0007).
-- **The wait is bounded by the host.** `shell_await` cannot exceed 50000 ms. A tool call cannot be suspended. A longer wait is ending the turn, not a longer `waitMs`.
+- **The wait is bounded by the host.** `shell_await` cannot exceed 50000 ms. A tool call cannot be suspended. A longer wait ends the turn rather than increasing `waitMs`. A resident session parks until completion. A single-shot host holds `agent_before_settle` for live, unready `session` executions with notification and triggering enabled, then delivers their records and continues. Ready and non-waking work remains subject to final shutdown; work that must outlive that exit belongs to `workspace`.
 - **The runtime is Linux-only.** Process identity, containment and the PTY recipe depend on procfs, process groups and `script(1)`. A non-Linux platform fails with an explicit error instead of returning an empty process tree.
 
 ---

@@ -668,7 +668,11 @@ export class ShellRegistry {
 
   // -------------------------------------------------------------------- await
 
-  async awaitHandles(params: ShellAwaitParams, signal?: AbortSignal): Promise<ShellAwaitResult> {
+  async awaitHandles(
+    params: ShellAwaitParams,
+    signal?: AbortSignal,
+    options?: { consumeSettles?: boolean },
+  ): Promise<ShellAwaitResult> {
     const ids = normalizeIds(params.ids);
     const execs = ids.map((id) => this.requireExecution(id));
     const mode = params.mode ?? "all";
@@ -772,7 +776,7 @@ export class ShellRegistry {
         for (const exec of execs) {
           if (exec.finalized) {
             outcomes.push({ ...exec.handle });
-            if (!aborted) {
+            if (!aborted && options?.consumeSettles !== false) {
               exec.handle.consumedByAwait = true;
               exec.meta.consumedByAwait = true;
               void this.persist(exec);

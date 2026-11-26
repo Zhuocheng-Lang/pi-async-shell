@@ -7,7 +7,7 @@
  * model.
  */
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -31,10 +31,15 @@ interface Harness {
   callToolResult(name: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any>;
   toolSchema(name: string): Record<string, any>;
   refresh(): void;
+  shutdown(): Promise<void>;
+  /** Extension handler errors the runner reported, in arrival order. */
+  errors: string[];
   dispose(): void;
 }
 
-async function createHarness(options: { cwd?: string } = {}): Promise<Harness> {
+async function createHarness(
+  options: { cwd?: string; mode?: "tui" | "rpc" | "json" | "print" } = {},
+): Promise<Harness> {
   const cwd = options.cwd ?? tempCwd("pas-e2e-");
   const agentDir = tempCwd("pas-agent-");
   writeFileSync(join(agentDir, "auth.json"), "{}");
@@ -77,7 +82,12 @@ async function createHarness(options: { cwd?: string } = {}): Promise<Harness> {
   });
   // A shutdown handler makes the runner "bound", which is what makes
   // session_start(reason: "reload") fire after session.reload().
-  await session.bindExtensions({ shutdownHandler: () => {} });
+  const errors: string[] = [];
+  await session.bindExtensions({
+    shutdownHandler: () => {},
+    mode: options.mode ?? "print",
+    onError: (error) => errors.push(error.error),
+  });
 
   let tools = new Map<string, { execute: (...args: unknown[]) => Promise<any> }>();
   let definitions = new Map<string, Record<string, any>>();
@@ -116,6 +126,11 @@ async function createHarness(options: { cwd?: string } = {}): Promise<Harness> {
       return definition.parameters as Record<string, any>;
     },
     refresh,
+    errors,
+    async shutdown() {
+      const runner = (session as unknown as { _extensionRunner: any })._extensionRunner;
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+    },
     dispose() {
       session.dispose();
     },
@@ -210,7 +225,7 @@ async function invokeAsyncShellCommand(
 test("a real Pi session drives the seven shell tools end to end", { timeout: 120_000 }, async () => {
   const previousShell = process.env.PI_ASYNC_SHELL;
   process.env.PI_ASYNC_SHELL = "/bin/sh";
-  const harness = await createHarness();
+  const harness = await createHarness({ mode: "tui" });
   try {
     const shellTools = harness.session
       .getActiveToolNames()
@@ -240,6 +255,10 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
     assert.match(
       harness.session.systemPrompt,
       /When no later action in the task depends on an external state change/,
+    );
+    assert.match(
+      harness.session.systemPrompt,
+      /agent_before_settle waits for each live, unready session execution with notifyOnCompletion and triggerOnCompletion enabled/,
     );
 
     // Turn 1: start, await, read — the causal barrier pi-background-tasks lacks.
@@ -527,10 +546,10 @@ test("inlineSettleMs: 0 returns at once and leaves the completion channel alone"
   }
 });
 
-test("a default session execution survives agent settling", { timeout: 120_000 }, async () => {
+test("a default session execution survives agent settling in a resident session", { timeout: 120_000 }, async () => {
   const previousShell = process.env.PI_ASYNC_SHELL;
   process.env.PI_ASYNC_SHELL = "/bin/sh";
-  const harness = await createHarness();
+  const harness = await createHarness({ mode: "tui" });
   try {
     const started = await harness.callTool("shell_start", { command: "sleep 30" });
     const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
@@ -543,6 +562,183 @@ test("a default session execution survives agent settling", { timeout: 120_000 }
     assert.match(status, /scope session/);
     assert.equal(customMessages(harness.session, "async-shell-error").length, 0);
     await harness.callTool("shell_cancel", { ids: id, ladder: "force" });
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+for (const mode of ["print", "json"] as const) {
+  test(mode + " mode holds settlement for waking session work", { timeout: 120_000 }, async () => {
+    const previousShell = process.env.PI_ASYNC_SHELL;
+    const previousWindow = process.env.PI_ASYNC_SHELL_COALESCE_MS;
+    process.env.PI_ASYNC_SHELL = "/bin/sh";
+    // Keep an early sibling's record in the boundary queue while the later
+    // sibling settles. The boundary, not the idle timer, delivers both records.
+    process.env.PI_ASYNC_SHELL_COALESCE_MS = "5000";
+    const harness = await createHarness({ mode });
+    const ids: string[] = [];
+    let continuationSawCompletion = false;
+    try {
+      harness.faux.setResponses([
+        fauxAssistantMessage(
+          [
+            fauxToolCall("shell_start", {
+              command: "sleep 0.1; echo single-shot-short",
+              name: "single-shot-short",
+              scope: "session",
+              inlineSettleMs: 0,
+            }),
+            fauxToolCall("shell_start", {
+              command: "sleep 0.4; echo single-shot-long",
+              name: "single-shot-long",
+              scope: "session",
+              inlineSettleMs: 0,
+            }),
+          ],
+          { stopReason: "toolUse" },
+        ),
+        (context) => {
+          ids.push(
+            handleIdForCommand(context, "single-shot-short"),
+            handleIdForCommand(context, "single-shot-long"),
+          );
+          return fauxAssistantMessage("yield until the commands complete");
+        },
+        (context) => {
+          continuationSawCompletion = completionInContext(context);
+          return fauxAssistantMessage("observed both completions");
+        },
+      ]);
+
+      await harness.session.prompt("start two commands and yield until completion");
+
+      assert.equal(continuationSawCompletion, true, "the completion must drive one continuation");
+      const completions = customMessages(harness.session, "async-shell-completion");
+      assert.equal(completions.length, 1, "the settle boundary delivers the sibling records together");
+      const completionText = JSON.stringify(completions[0]?.content);
+      for (const id of ids) {
+        assert.match(completionText, new RegExp(id));
+        const status = await harness.callToolResult("shell_status", { id });
+        assert.equal(status.structuredContent.handles[0].status, "completed");
+        assert.equal(
+          status.structuredContent.handles[0].consumedByAwait,
+          false,
+          "the lifecycle observer must leave delivery to the completion channel",
+        );
+      }
+    } finally {
+      harness.dispose();
+      if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+      else process.env.PI_ASYNC_SHELL = previousShell;
+      if (previousWindow === undefined) delete process.env.PI_ASYNC_SHELL_COALESCE_MS;
+      else process.env.PI_ASYNC_SHELL_COALESCE_MS = previousWindow;
+    }
+  });
+}
+
+test("print mode releases ready and non-waking companions to session shutdown", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness({ mode: "print" });
+  const handles: any[] = [];
+  try {
+    handles.push(
+      (await harness.callToolResult("shell_start", {
+        command: "sleep 0.15; touch $PI_ASYNC_SHELL_EXEC_DIR/ready; sleep 30",
+        name: "ready companion",
+        scope: "session",
+        inlineSettleMs: 0,
+      })).structuredContent,
+      (await harness.callToolResult("shell_start", {
+        command: "sleep 30",
+        name: "non-triggering companion",
+        scope: "session",
+        inlineSettleMs: 0,
+        triggerOnCompletion: false,
+      })).structuredContent,
+      (await harness.callToolResult("shell_start", {
+        command: "sleep 30",
+        name: "silent companion",
+        scope: "session",
+        inlineSettleMs: 0,
+        notifyOnCompletion: false,
+      })).structuredContent,
+    );
+    harness.faux.setResponses([fauxAssistantMessage("finish without waiting for companion exit")]);
+
+    await harness.session.prompt("leave companion services to shutdown");
+
+    for (const handle of handles) {
+      const status = await harness.callToolResult("shell_status", { id: handle.id });
+      assert.equal(status.structuredContent.handles[0].status, "running");
+    }
+    const ready = await harness.callToolResult("shell_status", { id: handles[0].id });
+    assert.equal(typeof ready.structuredContent.handles[0].readyAt, "number");
+
+    await harness.shutdown();
+    for (const handle of handles) {
+      const completion = JSON.parse(readFileSync(join(handle.log.dir, "completion.json"), "utf8"));
+      assert.equal(completion.status, "cancelled", "shutdown must still reap remaining session work");
+    }
+  } finally {
+    await harness.shutdown();
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("a disposed single-shot session releases its hold without reading a stale context", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness({ mode: "print" });
+  let endedTurn = false;
+  let settled = false;
+  let promptError: unknown;
+  try {
+    harness.faux.setResponses([
+      fauxAssistantMessage(
+        [fauxToolCall("shell_start", { command: "sleep 0.5", scope: "session", inlineSettleMs: 0 })],
+        { stopReason: "toolUse" },
+      ),
+      () => {
+        endedTurn = true;
+        return fauxAssistantMessage("end the turn while the command runs");
+      },
+      () => fauxAssistantMessage("observed the completion"),
+    ]);
+    const prompted = harness.session
+      .prompt("end the turn and leave the command running")
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          promptError = error;
+        },
+      );
+    assert.equal(await waitFor(() => endedTurn, 10_000), true, "the model must ask to end the turn");
+    // The host is at agent_before_settle, holding a live wake-up.
+    await sleep(300);
+    assert.equal(settled, false, "print mode must hold settlement for the running command");
+
+    // A host that gives up on the session invalidates the extension context
+    // while the wait is still in flight. The run still owns the command, so the
+    // hold must resume on its own state instead of reading the dead context.
+    harness.dispose();
+    assert.equal(
+      await waitFor(() => settled, 10_000),
+      true,
+      "the hold must end when the command settles: " + String(promptError),
+    );
+    await prompted;
+    assert.deepEqual(
+      harness.errors,
+      [],
+      "the hold must not read the extension context after dispose invalidates it",
+    );
   } finally {
     harness.dispose();
     if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
@@ -659,7 +855,7 @@ test("workspace completions surface when a new Pi session adopts their records",
 test("three completions coalesce into one message", { timeout: 120_000 }, async () => {
   const previousShell = process.env.PI_ASYNC_SHELL;
   process.env.PI_ASYNC_SHELL = "/bin/sh";
-  const harness = await createHarness();
+  const harness = await createHarness({ mode: "tui" });
   // The commands block on one file that the test opens after the turn ends, so
   // their settles land together. The raised window absorbs the moment a
   // contended runner needs to notice that file; the width of the window itself

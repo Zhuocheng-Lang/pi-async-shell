@@ -12,14 +12,14 @@ tracks:
 
 Answer three questions, in this order. The first sets the scope. The second sets the binding. The third decides only whether to call `shell_await` in the same turn.
 
-1. **Must it survive Pi exiting?** Yes -> `scope: "workspace"` (defaults `notifyOnCompletion: false`). No -> `scope: "session"`, the default.
+1. **Must it survive Pi exiting?** Yes -> `scope: "workspace"` (defaults `notifyOnCompletion: false`). No -> `scope: "session"`, the default. In a single-shot host (`pi -p` text or JSON), work needed only until its completion wake-up remains `session`: the settle boundary waits for it. Work that must outlive final session shutdown answers Yes.
 2. **Does the program test `isatty()`, prompt, or drive a TUI?** No -> `binding: "pipe"`. Yes -> `binding: "pty"`. The two answers are exhaustive: terminal interaction belongs to the agent, through `shell_send` and `ptyView` (R3).
-3. **Is there independent work to do first?** If yes, start the execution first and `shell_await` later. If no other work remains, ending the turn is cheaper than waiting, because the completion event wakes the session.
+3. **Is there independent work to do first?** If yes, start the execution first and `shell_await` later. If no other work remains, ending the turn is cheaper than waiting: a resident session suspends until completion, and a single-shot host holds settlement for pending wake-ups.
 
 Two guards follow from the model, not from policy:
 
 - Every scope combines with every binding. Both bindings promote from `session` to `workspace` without a respawn or a log transition (R2, R4).
-- A turn boundary leaves a `session` execution running. No narrower scope and no settle-time error exist. When the caller needs a causal barrier inside one turn, it calls `shell_await`. The caller keeps the same owner.
+- A turn boundary in a resident session leaves a `session` execution running. In a single-shot host, the settle boundary holds pending wake-ups and releases ready or non-waking work to final shutdown. No narrower scope and no settle-time error exist. When the caller needs a causal barrier inside one turn, it calls `shell_await`. The caller keeps the same owner.
 
 When the output does not need to outlive the call, a command expected to finish in a second or two belongs on built-in `bash`. `shell_start` adds a handle, a log directory and a tool round-trip. The inline settle window (§3.1) removes the second round trip. The handle and the log directory remain. Neither pays for itself on `git status`.
 
@@ -250,7 +250,7 @@ Point-in-time inspection of one handle or of all handles. Its prompt guideline f
 
 ## 4. Completion Semantics
 
-Five facts determine whether a completion event is delivered:
+These facts determine whether a completion event is delivered:
 
 | Fact | Effect |
 |---|---|
@@ -259,8 +259,12 @@ Five facts determine whether a completion event is delivered:
 | `notifyOnCompletion` is true and no await consumed it | enqueue a completion record |
 | The agent is busy, `delivery: "steer"` (default) | records are coalesced and steered before the next LLM call |
 | The agent is busy, `delivery: "settle"` | records are coalesced and injected once at `agent_before_settle` |
-| The agent is idle | one follow-up message after a 150 ms coalescing window; `triggerOnCompletion` decides whether a turn starts |
+| The agent is idle in a resident session | one follow-up message after a 150 ms coalescing window; `triggerOnCompletion` decides whether a turn starts |
+| A single-shot host reaches `agent_before_settle` | live, unready `session` work with notification and triggering enabled holds the boundary until exit or readiness; settled records are injected with `continue: true` |
+| Owner is `session` and final `session_shutdown` fires | every remaining execution is reaped through the cancellation ladder, including ready and non-waking work |
 | Owner is `workspace` and Pi exits first | record persists; surfaced on the next `session_start` when notification is enabled |
+
+The single-shot hold requires all of these properties: `scope: "session"`, a live status, no `readyAt`, `notifyOnCompletion !== false`, and `triggerOnCompletion !== false`. Its internal wait observes exit or readiness without setting `consumedByAwait`; the normal completion channel remains the delivery. A service that becomes ready stops holding even while it keeps running.
 
 Coalescing matters. A batch of twelve commands that finish within a second would otherwise produce twelve wake-ups and twelve model turns for one decision. A `workspace` record starts no turn by itself. `notifyOnCompletion` defaults to false for that scope, and a record surfaced at `session_start` is delivered as a next-turn message.
 

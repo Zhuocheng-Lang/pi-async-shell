@@ -20,7 +20,7 @@ Pi 内置的 `bash` 工具会一直阻塞到进程退出，无法启动常驻开
 - **在 20 万行日志中精准检索而不撑爆上下文。** `stdout`、`stderr` 和 `combined` 从 spawn 起直接落盘。`shell_read({ mode: "grep" })` 只提取命中行及上下文，不把几十兆日志灌进模型提示词。到达日志容量上限后只停止写入并继续排空管道，绝不会因为输出量大而杀掉命令。
 - **驱动交互式 CLI 与 TUI。** `binding: "pty"` 分配真实的落盘伪终端。Agent 可以匹配不带换行符的输入提示符，通过 `shell_send` 发送文本或组合键，并通过 `stream: "ptyView"` 读取渲染后的终端屏幕。
 - **活过 Pi 崩溃与重启。** `scope: "workspace"` 任务独立于 Pi 进程存活，后续会话启动后会自动接管并保留完整日志历史。`shell_promote` 可将正在运行的 session 任务原地提升为 workspace 所有权，无需重启进程，也不丢任何输出。
-- **完成通知主动唤醒 Agent。** 未被同步等待的后台命令在轮次中途结束时，会在下一次 LLM 决策前自动送达一条含退出码与输出摘录的通知。而在 `inlineSettleMs`（默认 1000 ms）内快速结束的命令，会在 `shell_start` 当次调用中直接带回结果，无需额外调用 `shell_await`。
+- **完成通知主动唤醒 Agent。** 未被同步等待的后台命令在轮次中途结束时，会在下一次 LLM 决策前自动送达一条含退出码与输出摘录的通知。而在 `inlineSettleMs`（默认 1000 ms）内快速结束的命令，会在 `shell_start` 当次调用中直接带回结果，无需额外调用 `shell_await`。单次运行（`pi -p` 或 `--mode json`）同样成立：落定边界会等待仍存活、未就绪的 session 工作，完成记录会继续本次运行，而不是随会话一起被回收。
 
 ## 与内置 `bash` 及 8 个 npm 后台扩展的实测对比
 
@@ -121,7 +121,7 @@ const failures = await shell_read({
 
 | 设置 | 行为 |
 |---|---|
-| `scope: "session"`（默认） | 跨轮次和 `/reload` 存活；随所属 Pi 会话结束而自动清理。 |
+| `scope: "session"`（默认） | 跨轮次和 `/reload` 存活；在单次 `pi -p` 运行中，仍存活且未就绪的工作会拖住落定边界，直到落定或就绪；随所属 Pi 会话结束而自动清理。 |
 | `scope: "workspace"` | 跨 Pi 进程退出或崩溃存活，可由该工作区的后续 Pi 会话自动接管。 |
 | `binding: "pipe"`（默认） | 分别落盘 `stdout`、`stderr` 及 `combined` 输出；不提供 stdin。 |
 | `binding: "pty"` | 落盘的真实伪终端，支持通过 `shell_send` 输入按键，以及通过 `ptyView` 读取终端渲染画面。 |

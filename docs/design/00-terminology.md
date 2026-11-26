@@ -104,7 +104,7 @@ This document is normative. It carries no **[Fact]** / **[Inference]** / **[Reco
 
 ### session
 
-**Definition.** Scope value, and the default. The Pi session owns the execution. The turn may end freely. `session_shutdown` reaps the execution. A same-process `/reload` transfers ownership instead of reaping.
+**Definition.** Scope value, and the default. The Pi session owns the execution. The turn may end freely while the session stays open. In a single-shot host (`pi -p` text or JSON), `agent_before_settle` waits for live, unready `session` executions with `notifyOnCompletion` and `triggerOnCompletion` enabled so their completions can continue the run. `session_shutdown` then reaps every remaining `session` execution, including ready companions and executions with either option disabled. A same-process `/reload` transfers ownership instead of reaping.
 
 **Not** "background task". `session` is the default scope. It is also the reason `shell_start` does not block.
 
@@ -504,9 +504,9 @@ This document is normative. It carries no **[Fact]** / **[Inference]** / **[Reco
 
 ### ending the turn long form
 
-**Definition.** The long wait: end the turn, let the completion event resume the conversation, and let the on-disk registry serve as the checkpoint.
+**Definition.** The long wait: end the turn and let the completion event resume the conversation. In a resident session, the event arrives after the turn ends. In a single-shot host, the extension holds `agent_before_settle` until each pending wake-up settles or becomes ready, injects the settled records, and continues the run. The on-disk registry is the checkpoint in both cases.
 
-**Not** giving up. Ending the turn suspends the conversation at zero cost. It is the mechanism that makes a long wait free. It is also the local equivalent of Pi Durable's park (`05-durability-and-containment.md` §1).
+**Not** giving up, and not a general way to outlive a single-shot host (`pi -p`). In a resident session, ending the turn suspends the conversation at zero cost and serves as the local equivalent of Pi Durable's park (`05-durability-and-containment.md` §1). In a single-shot host, only a live, unready `session` execution with notification and triggering enabled holds settlement. Ready companions and executions with either option disabled do not hold it; final `session_shutdown` reaps them. An execution that must outlive that shutdown belongs to `workspace`.
 
 **Used in** C9. `01-overview.md` R1.
 

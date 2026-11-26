@@ -17,14 +17,15 @@ import { DEFAULT_WAIT_MS, MAX_WAIT_MS, ShellRegistry } from "./core/registry.ts"
 import { claimHandoff, handoffKey, publishHandoff } from "./core/reload-hub.ts";
 import { acquireWorkspaceLock, releaseWorkspaceLock } from "./core/workspace-lock.ts";
 import { describeShellPolicy, resolveShell } from "./core/shell-policy.ts";
-import type {
-  CompletionRecord,
-  ShellAwaitResult,
-  ShellCancelResult,
-  ShellHandle,
-  ShellSendResult,
-  ShellStartResult,
-  ShellStatusResult,
+import {
+  isTerminal,
+  type CompletionRecord,
+  type ShellAwaitResult,
+  type ShellCancelResult,
+  type ShellHandle,
+  type ShellSendResult,
+  type ShellStartResult,
+  type ShellStatusResult,
 } from "./core/types.ts";
 
 const COMPLETION_TYPE = "async-shell-completion";
@@ -54,6 +55,8 @@ interface ExtensionState {
   settleClaims: Map<string, number>;
   /** Settles that arrived under a claim, held until that call decides. */
   heldSettles: Map<string, CompletionRecord>;
+  /** Suppress idle delivery while a single-shot settle boundary waits for work. */
+  holdingSingleShot: boolean;
   shellPolicyText: string;
 }
 
@@ -66,6 +69,7 @@ const state: ExtensionState = {
   delivered: new Set(),
   settleClaims: new Map(),
   heldSettles: new Map(),
+  holdingSingleShot: false,
   shellPolicyText: "",
 };
 
@@ -508,7 +512,7 @@ async function flushCompletions(): Promise<void> {
     clearTimeout(state.flushTimer);
     state.flushTimer = undefined;
   }
-  if (state.pending.length === 0) return;
+  if (state.pending.length === 0 || state.holdingSingleShot) return;
   // A record that asked to settle is left for agent_before_settle, which keeps
   // the run alive for it. Everything else goes out now.
   const records = state.busy
@@ -597,6 +601,82 @@ function createRegistry(ctx: ExtensionContext): ShellRegistry {
   return registry;
 }
 
+/**
+ * Work that must finish or become ready before a single-shot session settles.
+ * A ready execution is a companion service: readiness, not its eventual exit,
+ * is the milestone the agent needed. Notification and triggering must both be
+ * enabled; otherwise no completion wake-up can occur.
+ */
+function wakingSessionHandles(registry: ShellRegistry): ShellHandle[] {
+  return registry.handles.filter(
+    (handle) =>
+      handle.scope === "session" &&
+      !isTerminal(handle.status) &&
+      handle.readyAt === undefined &&
+      handle.notifyOnCompletion !== false &&
+      handle.triggerOnCompletion !== false,
+  );
+}
+
+/**
+ * The host's mode, or undefined once it invalidated this context.
+ *
+ * A host that disposes the session while the boundary waits still emits the
+ * boundary that follows the continuation, and every getter on that context
+ * throws. An unreadable mode is no reason to hold anything.
+ */
+function hostMode(ctx: ExtensionContext): ExtensionContext["mode"] | undefined {
+  try {
+    return ctx.mode;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Print and JSON hosts dispose the session as soon as the prompt settles. Hold
+ * that boundary for pending wake-ups so shutdown cannot reap the work before
+ * its completion continues the run. Readiness also satisfies the wait, which
+ * keeps companion services from holding a single-shot host open forever.
+ *
+ * This is observation, not tool-facing delivery: the completion channel remains
+ * responsible for reporting every settle, so the internal wait consumes none.
+ *
+ * The host runs this boundary between runs, so `ctx.signal` is undefined here
+ * and there is no abort to observe: a wait that is still in flight ends when the
+ * work it watches settles or becomes ready, or when this activation stops owning
+ * the registry (`session_shutdown`, a replacement session). Read the context
+ * before the first await, because a host that disposes the session mid-hold
+ * invalidates it and every later read throws.
+ */
+async function holdSingleShotForSessionWork(ctx: ExtensionContext): Promise<void> {
+  const mode = hostMode(ctx);
+  if (mode !== "print" && mode !== "json") return;
+  const registry = state.registry;
+  if (!registry) return;
+  const signal = ctx.signal;
+  state.holdingSingleShot = true;
+  try {
+    while (!signal?.aborted && state.registry === registry) {
+      const handles = wakingSessionHandles(registry);
+      if (handles.length === 0) return;
+      await registry.awaitHandles(
+        {
+          ids: handles.map((handle) => handle.id),
+          mode: "all",
+          until: { kind: "ready" },
+          waitMs: MAX_WAIT_MS,
+          includeOutputPreview: false,
+        },
+        signal,
+        { consumeSettles: false },
+      );
+    }
+  } finally {
+    state.holdingSingleShot = false;
+  }
+}
+
 function surfaceWorkspaceCompletions(registry: ShellRegistry): void {
   const records = registry.workspaceCompletions();
   if (records.length === 0) return;
@@ -629,6 +709,7 @@ const basePromptGuidelines = [
   "Use shell_start for commands that are slow, that should run in parallel, that must outlive the turn, or whose full log matters; keep bash for commands that finish in a second or two and need no log.",
   "shell_start returns a handle immediately, except that a command settling within inlineSettleMs (default 1000) returns its status and output tail in that same call; then there is nothing to await. Do independent work first, then call shell_await; do not sleep or poll shell_status in a loop.",
   "shell_await uses waitMs up to 50000 (default 30000); larger values are clamped and noted, not rejected. Use one long wait per script, leave room in codemode's 60-second budget, then end the turn and let completion delivery wake you.",
+  "In print or JSON single-shot mode, agent_before_settle waits for each live, unready session execution with notifyOnCompletion and triggerOnCompletion enabled, then delivers its completion and continues the run. Ready companions and executions with either option false do not hold settlement; session_shutdown still reaps remaining session work.",
   "Do not pipe command output to tail, head, grep, or wc: it caps the durable log before shell_read can search it, and on a shell without pipefail it also replaces the source exit code. Run the command whole and use shell_read with mode tail, grep, or offset.",
   "Use shell_start.cwd instead of prefixing the command with cd, so the record and the process agree on the working directory.",
   "Pipelines in a bash-like shell run with pipefail; any stage failure fails the command. A POSIX fallback reports only the last stage, and the handle names the exitSource.",
@@ -661,6 +742,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       state.flushTimer = undefined;
       state.uiTimer = undefined;
       state.busy = false;
+      state.holdingSingleShot = false;
       state.pending = [];
       state.delivered.clear();
     }
@@ -724,6 +806,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     state.flushTimer = undefined;
     state.uiTimer = undefined;
     state.busy = false;
+    state.holdingSingleShot = false;
     state.pending = [];
     state.delivered.clear();
     state.settleClaims.clear();
@@ -735,8 +818,9 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     state.busy = true;
   });
 
-  pi.on("agent_before_settle", async (event) => {
+  pi.on("agent_before_settle", async (event, ctx) => {
     state.busy = false;
+    await holdSingleShotForSessionWork(ctx);
     const entries: SessionBoundaryDraft[] = [];
     let continueTurn = false;
 
@@ -794,13 +878,13 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       notifyOnCompletion: Type.Optional(
         Type.Boolean({
           description:
-            "Deliver a completion message when the execution settles. Default true for session scope, false for workspace scope.",
+            "Deliver a completion message when the execution settles. Default true for session scope, false for workspace scope. When false, the execution does not hold print/JSON settlement.",
         }),
       ),
       triggerOnCompletion: Type.Optional(
         Type.Boolean({
           description:
-            "Let a completion message resume an idle turn. Default true; false reports without waking the agent.",
+            "Let a completion message resume an idle turn. Default true; false reports without waking the agent and does not hold print/JSON settlement.",
         }),
       ),
       delivery: Type.Optional(deliveryEnum),

@@ -2,6 +2,12 @@
 
 All notable changes to pi-async-shell are documented here. The format follows Keep a Changelog, and versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- A single-shot `pi -p` or `pi --mode json` run no longer reaps a `session` execution before its completion can continue the run. Those modes dispose the session as soon as the prompt settles, so a command started and then left to wake the agent was cancelled by `session_shutdown` at exit: the wake-up the agent was waiting for could not arrive. `agent_before_settle` now holds that boundary for every live, unready `session` execution with `notifyOnCompletion` and `triggerOnCompletion` enabled, and injects the settled records as one boundary message with `continue: true`. The hold only observes: the registry's completion channel still delivers, so an execution is announced once and `consumedByAwait` stays false. Readiness ends the wait as surely as exit, which keeps a companion service with a ready marker from holding the host open, and executions with either option false hold nothing at all. Final `session_shutdown` still reaps them, because work that must outlive the run is `scope: "workspace"`. Resident `tui` and `rpc` sessions keep the behaviour they had. `ShellRegistry.awaitHandles` takes the delivery decision as an internal option rather than a tool parameter, and the prompt guidelines, the two tool descriptions, the skill and both design series state which executions hold a single-shot run open.
+
 ## [0.2.3] - 2026-11-26
 
 ### Added

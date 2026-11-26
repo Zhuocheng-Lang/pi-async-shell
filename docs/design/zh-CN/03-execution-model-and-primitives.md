@@ -12,14 +12,14 @@ tracks:
 
 按顺序回答三个问题。第一个决定作用域。第二个决定绑定。第三个只决定是否在同一轮内调用 `shell_await`。
 
-1. **它必须活过 Pi 退出吗？** 是 -> `scope: "workspace"`（默认 `notifyOnCompletion: false`）。否 -> `scope: "session"`，即默认值。
+1. **它必须活过 Pi 退出吗？** 是 -> `scope: "workspace"`（默认 `notifyOnCompletion: false`）。否 -> `scope: "session"`，即默认值。在单次宿主（`pi -p` 文本或 JSON）中，只需要活到完成唤醒的工作仍属于 `session`：落定边界会等待它。必须活过最终会话关闭的工作才回答“是”。
 2. **程序会检测 `isatty()`、发出提示，或驱动 TUI 吗？** 否 -> `binding: "pipe"`。是 -> `binding: "pty"`。两个答案是穷尽的：终端交互属于 Agent，通过 `shell_send` 与 `ptyView` 完成（R3）。
-3. **有可以先做的独立工作吗？** 有，就先启动执行，稍后再 `shell_await`。如果没有别的工作，结束轮次比等待更便宜，因为完成事件会唤醒会话。
+3. **有可以先做的独立工作吗？** 有，就先启动执行，稍后再 `shell_await`。如果没有别的工作，结束轮次比等待更便宜：驻留会话会挂起直到完成，单次宿主则会在落定边界等待待唤醒执行。
 
 两条守卫来自模型本身，而不是策略：
 
 - 每个作用域与每个绑定都能组合。两种绑定都能从 `session` 提升到 `workspace`，无需重启，也没有日志切换（R2、R4）。
-- 轮次边界让 `session` 执行继续运行。没有更窄的作用域，也没有落时错误。需要在一轮之内建立因果屏障时，调用者调用 `shell_await`。调用者保持同一个所有者。
+- 驻留会话的轮次边界让 `session` 执行继续运行。在单次宿主中，落定边界等待待唤醒执行，并把已就绪或不唤醒 Agent 的工作交给最终关闭回收。没有更窄的作用域，也没有落时错误。需要在一轮之内建立因果屏障时，调用者调用 `shell_await`。调用者保持同一个所有者。
 
 当输出不需要活过本次调用时，预计一两秒内完成的命令应使用内置 `bash`。`shell_start` 会增加一个句柄、一个日志目录与一次工具往返。行内落定窗口（§3.1）消掉了第二次往返。句柄与日志目录仍然存在。两者在 `git status` 上都不划算。
 
@@ -250,7 +250,7 @@ interface ShellSendParams {
 
 ## 4. 完成语义
 
-五个事实决定是否投递完成事件：
+以下事实决定是否投递完成事件：
 
 | 事实 | 效果 |
 |---|---|
@@ -259,8 +259,12 @@ interface ShellSendParams {
 | `notifyOnCompletion` 为真且没有 await 消费它 | 入队一条完成记录 |
 | Agent 正忙，`delivery: "steer"`（默认） | 记录被合并，在下一次 LLM 调用之前 steer 投递 |
 | Agent 正忙，`delivery: "settle"` | 记录被合并，在 `agent_before_settle` 时一次投递 |
-| Agent 空闲 | 150 ms 合并窗口后投递一条后续消息；`triggerOnCompletion` 决定是否开启轮次 |
+| Agent 在驻留会话中空闲 | 150 ms 合并窗口后投递一条后续消息；`triggerOnCompletion` 决定是否开启轮次 |
+| 单次宿主到达 `agent_before_settle` | 仍存活、未就绪且同时启用通知与触发的 `session` 工作拖住边界，直到退出或就绪；已落定记录连同 `continue: true` 注入 |
+| 所有者是 `session` 且最终 `session_shutdown` 触发 | 所有剩余执行都经取消阶梯回收，包括已就绪与不唤醒 Agent 的工作 |
 | 所有者是 `workspace` 且 Pi 先退出 | 记录持久化；通知启用时在下次 `session_start` 呈现 |
+
+单次宿主的等待要求同时满足：`scope: "session"`、状态仍存活、没有 `readyAt`、`notifyOnCompletion !== false`、`triggerOnCompletion !== false`。内部等待只观察退出或就绪，不设置 `consumedByAwait`；正常完成通道仍负责投递。服务一旦就绪，即使继续运行也不再拖住边界。
 
 合并很重要。一批十二条命令在一秒内完成，否则会产生十二次唤醒与十二次模型轮次，只为做一个决定。`workspace` 记录不会自行开启轮次。该作用域的 `notifyOnCompletion` 默认为 false，在 `session_start` 呈现的记录作为下一轮消息投递。
 

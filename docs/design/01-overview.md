@@ -58,9 +58,9 @@ If the owner cannot exit while the execution runs, the current turn cannot proce
 
 R1 first read "blocking is a consequence of scope". That statement is true only where waiting and owning consume the same resource. They are two questions, and the corrected rule states both:
 
-> **Scope decides who may reap the process. The wait decides who may proceed. Ending the turn is what lets those two answers differ.**
+> **Scope decides who may reap the process. The wait decides who may proceed. Ending the turn lets those answers differ while the session stays open or a single-shot settle boundary holds a pending wake-up.**
 
-`session` scope means the conversation may end while the session still owes the execution a cleanup. `workspace` scope means even the session's exit does not end that debt. `shell_await` narrows the wait for one tool call. It changes neither.
+`session` scope means the turn may end while a resident session stays open and still owes the execution a cleanup. In a single-shot host (`pi -p` text or JSON), `agent_before_settle` holds pending wake-ups: live, unready `session` executions with `notifyOnCompletion` and `triggerOnCompletion` enabled. Their completion records continue the run before shutdown. Ready companions and executions with either option disabled do not hold settlement; final `session_shutdown` reaps every remaining `session` execution. `workspace` scope means even the session's exit does not end that debt. `shell_await` narrows the wait for one tool call. It changes neither.
 
 This dissolves the "coordination axis" that the earlier draft treated as independent. The practical mapping is:
 
@@ -155,7 +155,7 @@ Every mutating tool states whether re-running it after a crash is indistinguisha
 
 ### C9. `shell_await` is the short form, and ending the turn is the long one
 
-A tool call in `pi-coding-agent` cannot be suspended, so `shell_await` blocks for as long as it waits. It is therefore correct only for waits short enough that crossing a turn boundary would cost more than it saves. `waitMs` defaults to 30000 and is capped at 50000, which leaves room in codemode's 60-second default script budget. Do a wait measured in minutes by ending the turn. The conversation suspends at zero cost. The completion event resumes it. The handle registry on disk is the checkpoint. The rule itself is the deliverable. A wait measured in minutes is not a `shell_await`. It is the long form.
+A tool call in `pi-coding-agent` cannot be suspended, so `shell_await` blocks for as long as it waits. It is therefore correct only for waits short enough that crossing a turn boundary would cost more than it saves. `waitMs` defaults to 30000 and is capped at 50000, which leaves room in codemode's 60-second default script budget. Do a wait measured in minutes by ending the turn. In a resident session, the conversation suspends at zero cost until the completion event resumes it. In a single-shot host (`pi -p` text or JSON), `agent_before_settle` waits for pending wake-ups and injects their completion records before the host disposes the session. The handle registry on disk is the checkpoint in both cases. Ready companions and non-waking executions do not hold settlement and are reaped at final shutdown; an execution that must outlive the run requires `scope: "workspace"` or `shell_promote`. The rule itself is the deliverable. A wait measured in minutes is not a `shell_await`. It is the long form.
 
 ### C10. One writer per workspace, and observers are read-only
 

@@ -20,7 +20,7 @@ Pi's built-in `bash` tool blocks until a process exits and cannot drive a long-l
 - **Search 200k-line logs without context bloat.** `stdout`, `stderr`, and `combined` streams are file-backed from spawn. `shell_read({ mode: "grep" })` extracts only the matching lines and context instead of pouring megabytes into the model prompt. At the log cap, recording stops while output keeps draining, so a chatty build is never killed for output volume.
 - **Drive interactive CLIs and TUIs.** `binding: "pty"` allocates a real disk-backed terminal. The agent waits for a prompt without a trailing newline, sends text or key chords via `shell_send`, and inspects the rendered terminal screen via `stream: "ptyView"`.
 - **Survive a Pi crash or restart.** `scope: "workspace"` jobs live outside the Pi process and are automatically adopted by a later session with full log history intact. `shell_promote` upgrades a live session job to workspace ownership in place—no restart, no lost output.
-- **Wake the agent on completion.** When an unawaited background command finishes mid-turn, it steers a notification with the exit code and a bounded output excerpt into the agent's next decision. Fast commands that finish within `inlineSettleMs` (default 1000 ms) return their result directly in `shell_start` with no extra `shell_await`.
+- **Wake the agent on completion.** When an unawaited background command finishes mid-turn, it steers a notification with the exit code and a bounded output excerpt into the agent's next decision. Fast commands that finish within `inlineSettleMs` (default 1000 ms) return their result directly in `shell_start` with no extra `shell_await`. A single-shot `pi -p` or `--mode json` run is not exempt: its settle boundary waits for live, unready session work, so the completion resumes the run instead of dying with the session.
 
 ## Measured against `bash` and 8 npm background extensions
 
@@ -121,7 +121,7 @@ const failures = await shell_read({
 
 | Setting | Behavior |
 |---|---|
-| `scope: "session"` (default) | Survives across turns and `/reload`; cleaned up when the owning Pi session exits. |
+| `scope: "session"` (default) | Survives across turns and `/reload`; in a single-shot `pi -p` run, live unready work holds the settle boundary until it completes or becomes ready; cleaned up when the owning Pi session exits. |
 | `scope: "workspace"` | Survives a Pi process exit or crash and is adopted by the next session in that workspace. |
 | `binding: "pipe"` (default) | Separate `stdout` and `stderr` files plus `combined` output. Refuses stdin. |
 | `binding: "pty"` | Real disk-backed pseudo-terminal, key input via `shell_send`, and rendered viewport reads via `ptyView`. |

@@ -97,15 +97,17 @@ shell_send refuses pipe bindings. Output patterns can match a prompt even when i
 
 ## Choose ownership
 
-- session is the default. Work survives the turn and /reload, but ends with its owning Pi session.
-- workspace survives Pi process restarts and can be adopted by a later session.
+- session is the default. Work survives the turn in a resident session and survives /reload. In single-shot print or JSON mode, pending waking work holds settlement until completion or readiness; final session shutdown reaps every remaining session execution.
+- workspace survives Pi process restarts and single-shot exits, and can be adopted by a later session.
 - shell_promote({ id, to: "workspace" }) releases either a pipe or pty session without restarting it.
+
+Pending waking work is live and unready, with notifyOnCompletion and triggerOnCompletion both enabled. Ready companions and executions with either option false do not hold a single-shot run open. Give a companion service a ready marker when its readiness, rather than its eventual exit, is the milestone the agent needs.
 
 Do not use scope turn; it no longer exists.
 
 ## Wait within the caller budget
 
-shell_await waitMs defaults to 30000 and is clamped to 50000; an over-limit value is reported in the result note. A full-length wait that times out tells you to end the turn: completion delivery starts the next decision, so repeated blocking waits waste the codemode script budget. shell_read mode all is a bounded head read (2000 lines / 50 KiB) whose note explains how to page with offset.
+shell_await waitMs defaults to 30000 and is clamped to 50000; an over-limit value is reported in the result note. A full-length wait that times out tells you to end the turn: completion delivery starts the next decision, so repeated blocking waits waste the codemode script budget. In print or JSON mode, agent_before_settle waits for pending waking session work instead of letting immediate shutdown reap it. shell_read mode all is a bounded head read (2000 lines / 50 KiB) whose note explains how to page with offset.
 
 Structured callers read the result object, not the text. In codemode, check settled, timedOutWaiting, outcomes, stillRunning and note together: an expired wait returns an empty outcomes list and carries its instruction in note, so a script that only inspected outcomes cannot tell an expiry from a failure.
 
@@ -129,7 +131,7 @@ shell_await({ ids: "sh_wait_id", waitMs: 30000 })
 
 ## Completion delivery
 
-A command that settles while nothing awaits it notifies you. If you are still working, the notification arrives before your next LLM call, so you do not have to end the turn to learn that a command finished. shell_start delivery: "settle" holds the notification until the run settles instead. A settle that an await reports is delivered by that result alone, so the same run is never announced twice.
+A command that settles while nothing awaits it notifies you. If you are still working, the notification arrives before your next LLM call, so you do not have to end the turn to learn that a command finished. shell_start delivery: "settle" holds the notification until the run settles instead. A settle that an await reports is delivered by that result alone, so the same run is never announced twice. The single-shot lifecycle wait is only an observer: it does not consume the completion or mark it consumedByAwait.
 
 ## Environment and logs
 
