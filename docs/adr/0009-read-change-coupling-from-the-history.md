@@ -19,9 +19,10 @@ answer either:
 - Is `src/core/types.ts` — fan-in ten, the highest in the tree — a place where
   types are concentrated, or a contract that drags its consumers?
 
-The history answers both, and it is short. Forty-one commits are reachable from
-git HEAD, and that set is `jj log -r '::@-'` minus jj's virtual root: the same
-commit ids, compared one by one. The working-copy commit `@` is excluded. It
+The history answers both, and it is short. At `965667f4`, the split this
+decision was recorded against, forty-one commits were reachable from `git HEAD`,
+and that set is `jj log -r '::@-'` minus jj's virtual root: the same commit ids,
+compared one by one. The working-copy commit `@` is excluded. It
 carries a whole session as a single commit, so including it collapses every
 module added in that session into one observation and destroys the statistic it
 was supposed to join. Eighteen of the forty-one touch `src/`, seven of those

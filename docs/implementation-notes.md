@@ -283,12 +283,14 @@ like the matrix, and `pnpm cochange` runs it;
 `docs/adr/0009-read-change-coupling-from-the-history.md` records why a
 whole-tree commit is cut out and why a pair seen once stays below the threshold.
 
-The history is short enough to state in full. Forty-one commits are reachable
-from git HEAD, which is `jj log -r '::@-'` without jj's virtual root, and the
-working-copy commit is excluded because it carries a session as a single commit.
-Eighteen touch `src/`, nine of them with two or more files, and two of those
-touch most of the tree — the import and the split. The matrix therefore rests on
-nine observations, and the report says so above every table.
+The history is short enough to state in full, and it is stated at the split of
+0.2.3, `965667f4`, so that a commit count in this section does not have to be
+rewritten by every commit after it. Forty-one commits were reachable from git
+HEAD then, which is `jj log -r '::@-'` without jj's virtual root, and the
+working-copy commit was excluded because it carries a session as a single commit.
+Eighteen of them touched `src/`, nine of those with two or more files, and two of
+those touched most of the tree — the import and the split. The matrix therefore
+rests on nine observations, and the report says so above every table.
 
 `pnpm cochange` prints this, with eleven pairs held back by the threshold:
 
