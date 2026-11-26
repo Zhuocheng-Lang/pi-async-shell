@@ -318,6 +318,18 @@ export class ShellRegistry {
     return () => this.listeners.delete(listener);
   }
 
+  private assertWorkspaceWriter(action: string): void {
+    if (this.workspaceOwned) return;
+    throw new Error(`${action} requires the workspace writer lock; this process is read-only`);
+  }
+
+  /** Check metadata before requireExecution so an observer gets the C10 reason. */
+  private requireExecutionForWorkspaceWrite(id: string, action: string): Execution {
+    const scope = this.executions.get(id)?.handle.scope ?? this.readMeta(id)?.handle.scope;
+    if (scope === "workspace") this.assertWorkspaceWriter(action);
+    return this.requireExecution(id);
+  }
+
   // -------------------------------------------------------------------- start
 
   async start(params: ShellStartParams): Promise<ShellHandle> {
@@ -328,6 +340,7 @@ export class ShellRegistry {
     if (scope !== "session" && scope !== "workspace") {
       throw new Error("shell_start scope must be session or workspace");
     }
+    if (scope === "workspace") this.assertWorkspaceWriter("shell_start");
     const binding: Binding = params.binding ?? "pipe";
 
     if (params.request) {
@@ -938,6 +951,9 @@ export class ShellRegistry {
       if (!exec) {
         const meta = this.readMeta(id);
         if (meta) {
+          if (meta.handle.scope === "workspace" && !isTerminal(meta.handle.status)) {
+            this.assertWorkspaceWriter("shell_cancel");
+          }
           results.push({
             id,
             status: meta.handle.status,
@@ -952,6 +968,7 @@ export class ShellRegistry {
         results.push({ id, status: exec.handle.status, verifiedGone: true });
         continue;
       }
+      if (exec.handle.scope === "workspace") this.assertWorkspaceWriter("shell_cancel");
       exec.cancelRequested = true;
       const ladder = params.ladder ?? "graceful";
       // Every other wait in this runtime is clamped; a grace period that could be
@@ -1035,7 +1052,7 @@ export class ShellRegistry {
   // ------------------------------------------------------------------ promote
 
   async promote(params: ShellPromoteParams): Promise<ShellHandle> {
-    const exec = this.requireExecution(params.id);
+    const exec = this.requireExecutionForWorkspaceWrite(params.id, "shell_promote");
     if (isTerminal(exec.handle.status)) throw new Error("cannot promote a settled execution");
     // `to: "session"` named a direction promotion never had. The tool schema
     // offers `"workspace"` alone; a caller that reaches the registry directly
@@ -1046,6 +1063,7 @@ export class ShellRegistry {
       );
     }
 
+    this.assertWorkspaceWriter("shell_promote");
     if (exec.handle.scope === "workspace") return { ...exec.handle };
     exec.handle.scope = "workspace";
     exec.meta.scope = "workspace";
@@ -1093,7 +1111,7 @@ export class ShellRegistry {
   // --------------------------------------------------------------------- send
 
   async send(params: ShellSendParams): Promise<ShellSendResult> {
-    const exec = this.requireExecution(params.id);
+    const exec = this.requireExecutionForWorkspaceWrite(params.id, "shell_send");
     if (exec.handle.binding === "pipe") {
       throw new Error("shell_send refuses on pipe: there is no terminal and no stdin");
     }

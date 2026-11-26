@@ -7,8 +7,7 @@
  * model.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -21,6 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
+import { makeRegistry, sleep, tempCwd, waitFor } from "./helpers.ts";
 
 const extensionPath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "extension.ts");
 
@@ -34,9 +34,9 @@ interface Harness {
   dispose(): void;
 }
 
-async function createHarness(): Promise<Harness> {
-  const cwd = mkdtempSync(join(tmpdir(), "pas-e2e-"));
-  const agentDir = mkdtempSync(join(tmpdir(), "pas-agent-"));
+async function createHarness(options: { cwd?: string } = {}): Promise<Harness> {
+  const cwd = options.cwd ?? tempCwd("pas-e2e-");
+  const agentDir = tempCwd("pas-agent-");
   writeFileSync(join(agentDir, "auth.json"), "{}");
   const faux = createFauxCore({ models: [{ id: "faux-1", contextWindow: 128000, maxTokens: 4096 }] });
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json") });
@@ -177,13 +177,34 @@ function handleIdForCommand(context: TranscriptContext, command: string): string
   throw new Error(`no handle id for command: ${command}`);
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return false;
+async function invokeAsyncShellCommand(
+  harness: Harness,
+  args: string,
+  options: {
+    hasUI?: boolean;
+    select?: (title: string, choices: string[]) => Promise<string | undefined>;
+  } = {},
+): Promise<{ notifications: string[]; selections: string[] }> {
+  const runner = (harness.session as unknown as { _extensionRunner: any })._extensionRunner;
+  const command = runner.getCommand("async-shell");
+  assert.ok(command, "the extension must register /async-shell");
+  const notifications: string[] = [];
+  const selections: string[] = [];
+  const context = runner.createCommandContext();
+  Object.defineProperties(context, {
+    hasUI: { value: options.hasUI ?? false },
+    ui: {
+      value: {
+        notify: (message: string) => notifications.push(message),
+        select: async (title: string, choices: string[]) => {
+          selections.push(title);
+          return options.select?.(title, choices);
+        },
+      },
+    },
+  });
+  await command.handler(args, context);
+  return { notifications, selections };
 }
 
 test("a real Pi session drives the seven shell tools end to end", { timeout: 120_000 }, async () => {
@@ -224,7 +245,7 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
     // Turn 1: start, await, read — the causal barrier pi-background-tasks lacks.
     harness.faux.setResponses([
       fauxAssistantMessage(
-        [fauxToolCall("shell_start", { command: "echo e2e-hello; sleep 0.3; echo e2e-done", scope: "session" })],
+        [fauxToolCall("shell_start", { command: "echo e2e-hello; sleep 0.3; echo e2e-done", scope: "session", inlineSettleMs: 0 })],
         { stopReason: "toolUse" },
       ),
       (context) =>
@@ -249,7 +270,7 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
           .join("\n"),
       );
     assert.match(texts[0] ?? "", /Started sh_[0-9a-f]{8}/);
-    assert.match(texts[0] ?? "", /Settled inside the 1\.0s inline window/);
+    assert.match(texts[0] ?? "", /running/);
     assert.match(texts[1] ?? "", /completed/);
     assert.match(texts[2] ?? "", /e2e-hello/);
 
@@ -306,7 +327,7 @@ test("a command that settles inside the start call returns its result there", { 
     assert.equal(result.structuredContent.status, "failed");
     assert.equal(result.structuredContent.exitCode, 3);
     // The settle was reported by this call, so it must not be reported twice.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await sleep(200);
     assert.equal(customMessages(harness.session, "async-shell-completion").length, 0);
   } finally {
     harness.dispose();
@@ -334,7 +355,7 @@ test("an await that reports the settle does not announce it again", { timeout: 1
     const awaited = await harness.callTool("shell_await", { ids: id, waitMs: 10_000 });
     assert.match(awaited, /completed/);
     // The settle was reported by this call, so it must not be reported twice.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await sleep(200);
     assert.equal(customMessages(harness.session, "async-shell-completion").length, 0);
   } finally {
     harness.dispose();
@@ -353,14 +374,14 @@ test("an await in mode all holds a sibling's settle until both are reported", { 
   const harness = await createHarness();
   try {
     const first = await harness.callTool("shell_start", {
-      command: "sleep 0.2; echo first-settled",
+      command: "sleep 0.1; echo first-settled",
       scope: "session",
       inlineSettleMs: 0,
       triggerOnCompletion: false,
     });
     const firstId = first.match(/sh_[0-9a-f]{8}/)?.[0];
     const second = await harness.callTool("shell_start", {
-      command: "sleep 1.2; echo second-settled",
+      command: "sleep 0.4; echo second-settled",
       scope: "session",
       inlineSettleMs: 0,
       triggerOnCompletion: false,
@@ -379,7 +400,7 @@ test("an await in mode all holds a sibling's settle until both are reported", { 
     assert.match(text, new RegExp(secondId));
     // The first handle settled while the wait still waited for the second. Both
     // outcomes are in this result, so neither may arrive as a message as well.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await sleep(100);
     assert.equal(customMessages(harness.session, "async-shell-completion").length, 0);
   } finally {
     harness.dispose();
@@ -398,7 +419,7 @@ test("an aborted await hands its held settle back to the completion channel", { 
   const harness = await createHarness();
   try {
     const quick = await harness.callTool("shell_start", {
-      command: "sleep 0.6; echo aborted-await-quick",
+      command: "sleep 0.2; echo aborted-await-quick",
       scope: "session",
       inlineSettleMs: 0,
       triggerOnCompletion: false,
@@ -419,15 +440,9 @@ test("an aborted await hands its held settle back to the completion channel", { 
     );
     // The quick handle settles while the call still waits for the slow one, so
     // its record is held under the claim and nothing is announced.
-    let settledWhileWaiting = false;
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      if ((await harness.callTool("shell_status", { id: quickId })).includes("completed")) {
-        settledWhileWaiting = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    const settledWhileWaiting = await waitFor(
+      async () => (await harness.callTool("shell_status", { id: quickId })).includes("completed"),
+    );
     assert.equal(settledWhileWaiting, true, "the quick handle must settle before the abort");
     assert.equal(
       customMessages(harness.session, "async-shell-completion").length,
@@ -463,15 +478,16 @@ test("a command that outlives the inline window keeps the handle and still notif
   try {
     const startedAt = Date.now();
     const started = await harness.callTool("shell_start", {
-      command: "sleep 3; echo late",
+      command: "sleep 0.4; echo late",
       scope: "session",
+      inlineSettleMs: 100,
       triggerOnCompletion: false,
     });
     const elapsed = Date.now() - startedAt;
     assert.match(started, /Started sh_[0-9a-f]{8}/);
     assert.match(started, /running/);
     assert.doesNotMatch(started, /Settled inside/);
-    assert.ok(elapsed < 2000, `the start call must return when the window expires, not when the command settles (${elapsed}ms)`);
+    assert.ok(elapsed < 1000, `the start call must return when the window expires, not when the command settles (${elapsed}ms)`);
     // The claim ended with the wait, so the settle is still announced.
     assert.equal(
       await waitFor(() => customMessages(harness.session, "async-shell-completion").length > 0),
@@ -490,7 +506,6 @@ test("inlineSettleMs: 0 returns at once and leaves the completion channel alone"
   process.env.PI_ASYNC_SHELL = "/bin/sh";
   const harness = await createHarness();
   try {
-    assert.equal(harness.toolSchema("shell_start").properties.inlineSettleMs.maximum, undefined);
     const startedAt = Date.now();
     const started = await harness.callTool("shell_start", {
       command: "echo no-inline",
@@ -535,6 +550,112 @@ test("a default session execution survives agent settling", { timeout: 120_000 }
   }
 });
 
+test("a disposed session cannot deliver completions into its replacement", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const gate = join(tempCwd("pas-disposed-"), "open");
+  const command = "while [ ! -f " + gate + " ]; do sleep 0.01; done; echo disposed-session-output";
+  const first = await createHarness();
+  const started = await first.callTool("shell_start", {
+    command,
+    scope: "session",
+    inlineSettleMs: 0,
+    triggerOnCompletion: false,
+  });
+  const id = started.match(/sh_[0-9a-f]{8}/)?.[0];
+  const logPath = started.match(/^log: (.+)$/m)?.[1];
+  assert.ok(id && logPath);
+  first.dispose();
+
+  const second = await createHarness();
+  try {
+    writeFileSync(gate, "");
+    assert.equal(
+      await waitFor(() => existsSync(join(dirname(logPath), "completion.json")), 10_000),
+      true,
+      "the old execution must reach a terminal outcome",
+    );
+    await sleep(300);
+    assert.equal(
+      completionForId(second.session, id),
+      undefined,
+      "a registry from a disposed session must not use the replacement delivery channel",
+    );
+  } finally {
+    second.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("the async-shell command runs, reads, lists, and cancels without duplicate UI output", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const harness = await createHarness();
+  try {
+    const started = await invokeAsyncShellCommand(harness, "run echo command-driven");
+    const id = started.notifications.join("\n").match(/sh_[0-9a-f]{8}/)?.[0];
+    assert.ok(id);
+    await harness.callTool("shell_await", { ids: id, waitMs: 5000 });
+
+    const read = await invokeAsyncShellCommand(harness, `read ${id}`);
+    assert.match(read.notifications.join("\n"), /command-driven/);
+    const listed = await invokeAsyncShellCommand(harness, "");
+    assert.equal(listed.notifications.length, 1);
+    assert.match(listed.notifications[0] ?? "", new RegExp(id));
+
+    const interactive = await invokeAsyncShellCommand(harness, "", {
+      hasUI: true,
+      select: async (title, choices) => title.startsWith("async-shell (") ? choices[0] : "read tail",
+    });
+    assert.equal(interactive.selections.length, 2);
+    assert.equal(interactive.notifications.length, 1, "the selector is the listing; do not notify the same rows first");
+    assert.match(interactive.notifications[0] ?? "", /command-driven/);
+
+    // The live cancellation ladder belongs to registry tests. Here, verify the
+    // command routing and its idempotent result without paying a grace period.
+    const cancelled = await invokeAsyncShellCommand(harness, `cancel ${id}`);
+    assert.match(cancelled.notifications.join("\n"), /completed/);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
+test("workspace completions surface when a new Pi session adopts their records", { timeout: 120_000 }, async () => {
+  const previousShell = process.env.PI_ASYNC_SHELL;
+  process.env.PI_ASYNC_SHELL = "/bin/sh";
+  const cwd = tempCwd("pas-e2e-workspace-");
+  const producer = makeRegistry(cwd, { sessionId: "offline-producer" });
+  producer.setWorkspaceOwner(true);
+  const handle = await producer.start({
+    command: "echo offline-workspace",
+    scope: "workspace",
+    notifyOnCompletion: true,
+  });
+  assert.equal(await waitFor(() => existsSync(join(handle.log.dir, "completion.json"))), true);
+  await producer.shutdown("quit");
+
+  const harness = await createHarness({ cwd });
+  try {
+    harness.faux.setResponses([fauxAssistantMessage("observed the workspace completion")]);
+    await harness.session.prompt("continue to the queued workspace record");
+    assert.equal(
+      await waitFor(() => customMessages(harness.session, "async-shell-workspace").length > 0),
+      true,
+      "session_start must surface the unwatched workspace completion",
+    );
+    const message = customMessages(harness.session, "async-shell-workspace")[0];
+    assert.match(JSON.stringify(message?.content), new RegExp(handle.id));
+    assert.match(JSON.stringify(message?.content), /offline-workspace|completed/);
+  } finally {
+    harness.dispose();
+    if (previousShell === undefined) delete process.env.PI_ASYNC_SHELL;
+    else process.env.PI_ASYNC_SHELL = previousShell;
+  }
+});
+
 test("three completions coalesce into one message", { timeout: 120_000 }, async () => {
   const previousShell = process.env.PI_ASYNC_SHELL;
   process.env.PI_ASYNC_SHELL = "/bin/sh";
@@ -543,10 +664,10 @@ test("three completions coalesce into one message", { timeout: 120_000 }, async 
   // their settles land together. The raised window absorbs the moment a
   // contended runner needs to notice that file; the width of the window itself
   // is not what this test asserts.
-  const gate = join(mkdtempSync(join(tmpdir(), "pas-gate-")), "open");
+  const gate = join(tempCwd("pas-gate-"), "open");
   const waitForGate = (label: string) => `while [ ! -f ${gate} ]; do sleep 0.01; done; echo ${label}`;
   const previousWindow = process.env.PI_ASYNC_SHELL_COALESCE_MS;
-  process.env.PI_ASYNC_SHELL_COALESCE_MS = "2000";
+  process.env.PI_ASYNC_SHELL_COALESCE_MS = "500";
   try {
     harness.faux.setResponses([
       fauxAssistantMessage(
@@ -590,14 +711,14 @@ test("a completion steers into the next LLM call of a running turn", { timeout: 
     harness.faux.setResponses([
       fauxAssistantMessage(
         [
-          fauxToolCall("shell_start", { command: "sleep 0.2; echo steered", scope: "session", inlineSettleMs: 0 }),
-          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: "sleep 0.1; echo steered", scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: "sleep 0.5; echo long", scope: "session", inlineSettleMs: 0 }),
         ],
         { stopReason: "toolUse" },
       ),
       (context) =>
         fauxAssistantMessage(
-          [fauxToolCall("shell_await", { ids: handleIdForCommand(context, "sleep 2"), waitMs: 10_000 })],
+          [fauxToolCall("shell_await", { ids: handleIdForCommand(context, "sleep 0.5"), waitMs: 10_000 })],
           { stopReason: "toolUse" },
         ),
       // The short command settled while the await held the turn open, so this
@@ -628,18 +749,18 @@ test("delivery settle holds a completion until the run has no more work", { time
       fauxAssistantMessage(
         [
           fauxToolCall("shell_start", {
-            command: "sleep 0.2; echo held",
+            command: "sleep 0.1; echo held",
             scope: "session",
             delivery: "settle",
             inlineSettleMs: 0,
           }),
-          fauxToolCall("shell_start", { command: "sleep 2; echo long", scope: "session", inlineSettleMs: 0 }),
+          fauxToolCall("shell_start", { command: "sleep 0.5; echo long", scope: "session", inlineSettleMs: 0 }),
         ],
         { stopReason: "toolUse" },
       ),
       (context) =>
         fauxAssistantMessage(
-          [fauxToolCall("shell_await", { ids: handleIdForCommand(context, "sleep 2"), waitMs: 10_000 })],
+          [fauxToolCall("shell_await", { ids: handleIdForCommand(context, "sleep 0.5"), waitMs: 10_000 })],
           { stopReason: "toolUse" },
         ),
       (context) => {

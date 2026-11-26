@@ -7,7 +7,11 @@ import { applyPipelineStatus, supportsPipefail } from "../src/core/shell-policy.
 
 test("pipefail is applied only to real pipelines on supporting shells", () => {
   assert.equal(supportsPipefail("/bin/bash"), true);
+  assert.equal(supportsPipefail("/bin/zsh"), true);
+  assert.equal(supportsPipefail("/bin/ksh"), true);
   assert.equal(supportsPipefail("/bin/sh"), false);
+  assert.equal(supportsPipefail("/bin/dash"), false);
+  assert.equal(supportsPipefail("/bin/ash"), false);
   const bash = { shell: "/bin/bash", source: "fallback", posix: true } as const;
   const sh = { shell: "/bin/sh", source: "fallback", posix: true } as const;
 

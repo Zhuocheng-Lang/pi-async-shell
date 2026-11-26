@@ -3,9 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ShellRegistry, type RegistryOptions } from "../src/core/registry.ts";
 
+const temporaryDirectories = new Set<string>();
+
+/** Every fixture directory belongs to the test file that created it. */
 export function tempCwd(prefix = "pas-test-"): string {
-  return mkdtempSync(join(tmpdir(), prefix));
+  const path = mkdtempSync(join(tmpdir(), prefix));
+  temporaryDirectories.add(path);
+  return path;
 }
+
+// Registry finalization deliberately outlives individual tool calls. Clean at
+// process exit, after those fire-and-forget persistence writes have finished.
+process.once("exit", () => {
+  for (const path of temporaryDirectories) rmSync(path, { recursive: true, force: true });
+  temporaryDirectories.clear();
+});
 
 export function makeRegistry(cwd: string, options: Partial<RegistryOptions> = {}): ShellRegistry {
   return new ShellRegistry({
@@ -31,8 +43,4 @@ export async function waitFor(
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export function removeDir(path: string): void {
-  rmSync(path, { recursive: true, force: true });
 }

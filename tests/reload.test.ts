@@ -23,6 +23,21 @@ test("an unclaimed handoff expires and runs its cleanup", async () => {
   assert.equal(claimHandoff(key), undefined);
 });
 
+test("an abandoned registry cancels session handles but leaves workspace handles adoptable", async () => {
+  const registry = makeRegistry(tempCwd(), { sessionId: "abandoned" });
+  registry.setWorkspaceOwner(true);
+  const session = await registry.start({ command: "sleep 60", scope: "session" });
+  const workspace = await registry.start({ command: "sleep 60", scope: "workspace" });
+  try {
+    await registry.abandonHandoff();
+    assert.equal(registry.status({ id: session.id }).handles[0]?.status, "cancelled");
+    assert.equal(registry.status({ id: workspace.id }).handles[0]?.status, "running");
+    await registry.cancel({ ids: workspace.id, ladder: "force" });
+  } finally {
+    await registry.shutdown("quit");
+  }
+});
+
 test("a claimed registry keeps its live handles across the reload", async () => {
   const cwd = tempCwd();
   const registry = makeRegistry(cwd, { sessionId: "reload" });

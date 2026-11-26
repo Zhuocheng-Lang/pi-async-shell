@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { clearIndexCache, lineIndex, readLog } from "../src/core/log-manager.ts";
+import { clearIndexCache, lineIndex, readLog, readScreenLog } from "../src/core/log-manager.ts";
+import { tempCwd } from "./helpers.ts";
 
 function fixture(lines: number): string {
-  const dir = mkdtempSync(join(tmpdir(), "pas-log-"));
+  const dir = tempCwd("pas-log-");
   const path = join(dir, "combined.log");
   const body = Array.from({ length: lines }, (_, index) => `line-${index + 1}`).join("\n") + "\n";
   writeFileSync(path, body);
@@ -63,7 +63,7 @@ test("grep returns matches with context and line numbers", async () => {
 });
 
 test("grep matches a character that straddles a chunk boundary", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pas-log-"));
+  const dir = tempCwd("pas-log-");
   const path = join(dir, "combined.log");
   // The scan reads 1 MiB at a time. "中" is three bytes, so a line that starts
   // one byte before the boundary is split by the read and, decoded chunk by
@@ -108,7 +108,7 @@ test("maxBytes truncates from the correct end", async () => {
 });
 
 test("stripAnsi removes escapes by default and keeps them on request", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pas-log-"));
+  const dir = tempCwd("pas-log-");
   const path = join(dir, "combined.log");
   writeFileSync(path, "\u001b[31mred\u001b[0m plain\n");
   clearIndexCache();
@@ -119,11 +119,57 @@ test("stripAnsi removes escapes by default and keeps them on request", async () 
 });
 
 test("an empty log returns an empty result", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pas-log-"));
+  const dir = tempCwd("pas-log-");
   const path = join(dir, "combined.log");
   writeFileSync(path, "");
   clearIndexCache();
   const result = await readLog(path, { id: "x", mode: "tail" });
   assert.equal(result.text, "");
   assert.equal(result.totalBytes, 0);
+});
+
+test("a truncated or replaced log rebuilds its cached line index", async () => {
+  const path = fixture(600);
+  await lineIndex(path);
+  writeFileSync(path, "new-1\nnew-2\n");
+  const index = await lineIndex(path);
+  assert.equal(index.totalLines, 2);
+  assert.deepEqual(index.checkpoints, [0]);
+  assert.equal((await readLog(path, { id: "x", mode: "tail" })).text, "new-1\nnew-2");
+});
+
+test("grep separates disjoint context blocks", async () => {
+  const dir = tempCwd("pas-log-");
+  const path = join(dir, "combined.log");
+  writeFileSync(path, "before\nmatch-a\nmiddle\nmatch-b\nafter\n");
+  clearIndexCache();
+  const result = await readLog(path, { id: "x", mode: "grep", pattern: "match", context: 0 });
+  assert.equal(result.text, "2: match-a\n--\n4: match-b");
+  assert.match(result.note ?? "", /2 matching line/);
+});
+
+test("UTF-8 byte offsets page whole characters without repetition", async () => {
+  const dir = tempCwd("pas-log-");
+  const path = join(dir, "combined.log");
+  writeFileSync(path, "零\n一\n二\n三\n");
+  clearIndexCache();
+  const first = await readLog(path, { id: "x", mode: "head", lines: 2 });
+  const next = await readLog(path, { id: "x", mode: "offset", byteOffset: first.range.nextByte, lines: 2 });
+  assert.equal(first.text, "零\n一");
+  assert.equal(first.range.nextByte, 8);
+  assert.equal(next.text, "二\n三");
+  assert.doesNotMatch(`${first.text}${next.text}`, /�/);
+});
+
+test("screen reads support head, offset, and grep on the rendered viewport", async () => {
+  const dir = tempCwd("pas-log-");
+  const path = join(dir, "ptyView.log");
+  writeFileSync(path, "alpha\r\nbeta\r\nalpha target\r\n");
+  const head = await readScreenLog(path, { id: "x", mode: "head", lines: 2 });
+  assert.equal(head.text, "alpha\nbeta");
+  const offset = await readScreenLog(path, { id: "x", mode: "offset", lineOffset: 2, lines: 2 });
+  assert.equal(offset.text, "beta\nalpha target");
+  const grep = await readScreenLog(path, { id: "x", mode: "grep", pattern: "target", context: 1 });
+  assert.equal(grep.text, "2: beta\n3: alpha target");
+  assert.match(grep.note ?? "", /1 matching line/);
 });

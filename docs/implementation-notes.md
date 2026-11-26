@@ -67,24 +67,25 @@ Contract-to-evidence map:
 | Contract | Evidence |
 |---|---|
 | R1 — scope decides who reaps; the wait decides who proceeds | `registry.test.ts` (await all/any, expiry does not kill), `extension-e2e.test.ts` ("a default session execution survives agent settling"), `registry.test.ts` ("turn scope is rejected instead of acquiring settle-time semantics") |
-| R2 — `workspace` + `pty` is reachable | `pty.test.ts` ("workspace + pty is a reachable cell, not a coercion", "a live pty can be promoted to workspace"), `pty-durability.test.ts` ("a workspace pty survives a hard Pi exit and is re-adopted", "a promoted pty survives the Pi that promoted it") |
-| R3 — no attach surface; terminal interaction is agent-only | `pty.test.ts` ("shell_send refuses on a pipe binding"), `extension-e2e.test.ts` (the seven-tool list is asserted) |
+| R2 — `workspace` + `pty` is reachable | `pty.test.ts` ("workspace + pty is a reachable cell, not a coercion"), `registry.test.ts` ("promotion widens default pipe and pty sessions to workspace"), `pty-durability.test.ts` ("a workspace pty survives a hard Pi exit and is re-adopted", "a promoted pty survives the Pi that promoted it") |
+| R3 — no attach surface; terminal interaction is agent-only | `registry.test.ts` ("shell_send refuses on a pipe binding"), `extension-e2e.test.ts` (the seven-tool list is asserted) |
 | R4 — `pipe` keeps its data path out of the owner process | `workspace.test.ts` ("a workspace execution survives its parent and is re-adopted"), `pty-durability.test.ts` ("a promoted default pipe survives the Pi that promoted it") |
-| C1 — states; readiness is a milestone | `pty.test.ts` ("a marker file declares readiness out of band"), `registry.test.ts` ("timeoutSeconds settles as timed-out through the ladder") |
+| C1 — states; readiness is a milestone | `registry.test.ts` ("the ready marker works without any shell_start readiness declaration", "timeoutSeconds settles as timed-out through the ladder") |
 | C2 — readiness is a wait condition | `registry.test.ts` ("a ready marker works without any shell_start readiness declaration"), `registry.test.ts` ("an await pattern observes only the selected stream", "a pattern wait with since=now cannot re-match an answered prompt", "an await pattern matches a prompt before a newline arrives") |
 | C3 — completion is an event, not a poll | `extension-e2e.test.ts` ("three completions coalesce into one message") |
 | A settle is reported once | `extension-e2e.test.ts` ("a command that settles inside the start call returns its result there", "an await that reports the settle does not announce it again", "an await in mode all holds a sibling's settle until both are reported", "an aborted await hands its held settle back to the completion channel", "a command that outlives the inline window keeps the handle and still notifies", "inlineSettleMs: 0 returns at once and leaves the completion channel alone", "inline settle handles undefined and aborted signals without losing notifications") |
 | C4 — cancellation ladder + verification | `registry.test.ts` ("cancel proves the tree is gone, including a setsid escapee", "the fence reaches a child that cleared its env and lost its parent", "graceful cancel uses SIGTERM before the fence") |
 | C5 — drain, never stop reading | `registry.test.ts` ("the session pipe log cap drains instead of killing or blocking the child", "the workspace pipe log cap drains instead of killing or blocking the child"), `pty.test.ts` ("a pty recording stops at the log cap without killing the command") |
-| C6 — `(boot_id, pid, start)` identity | `workspace.test.ts` ("an unprovable workspace record becomes lost, never completed"), `identity.ts` |
-| C7 — terminal interaction never changes semantics | `pty.test.ts` ("ptyView is the rendered screen, not the raw stream"), `screen.test.ts` (ten cases) |
+| C6 — `(boot_id, pid, start)` identity | `workspace.test.ts` ("a workspace execution that exited while Pi was away is finalized on adoption", "an unprovable workspace record becomes lost, never completed", "adoption stops at the restart limit and records the reason"), `identity.ts` |
+| C7 — terminal interaction never changes semantics | `pty.test.ts` ("ptyView is the rendered screen, not the raw stream"), `screen.test.ts` (thirteen cases) |
 | C8 — replay safety is declared | `registry.test.ts` ("a request id makes shell_start replay-safe"), `pty.test.ts` ("a request id makes shell_send replay-safe") |
 | C9 — `shell_await` is the short form | Prompt guidelines; `extension-e2e.test.ts` uses it for a short command |
-| C10 — one writer, read-only observers | `workspace.test.ts` ("one writer owns the workspace; a second process is read-only", "a read-only observer never adopts workspace handles") |
+| C10 — one writer, read-only observers | `workspace.test.ts` ("one writer owns the workspace; a second process is read-only", "workspace locks recover stale or corrupt holders and never release another pid", "a read-only observer never adopts workspace handles", "a read-only observer can inspect but cannot mutate workspace executions") |
 | `/reload` handoff | `reload.test.ts` ("a claimed registry keeps its live handles across the reload"), `extension-e2e.test.ts` ("/reload hands live handles to the new activation") |
+| Session isolation | `extension-e2e.test.ts` ("a disposed session cannot deliver completions into its replacement") |
 | GC safety | `maintenance.test.ts` ("GC removes expired terminal history but never running or current-session records", "GC count eviction keeps the newest terminal records and observes a grace period", "registry initialization creates a non-destructive gitignore") |
 | Shell policy, credential filter, Linux guard | `maintenance.test.ts` ("the default command shell is bash, not the ambient non-POSIX login shell", "sensitive ambient variables are filtered and explicit env values win", "non-Linux platforms fail clearly instead of returning an empty process tree") |
-| Log reads | `log-manager.test.ts` (index, head, tail, offset by line and byte, grep, maxBytes, ANSI, empty log) |
+| Log reads | `log-manager.test.ts` (index and rebuild, head, tail, offset by line and byte, disjoint grep, maxBytes, ANSI, UTF-8 paging, screen reads, empty log) |
 
 ---
 
@@ -96,7 +97,7 @@ The first design gave `session` pipes an in-process tee and only `workspace` pip
 
 0.2.0 makes the detached pipe supervisor universal. At both scopes the child's stdout and stderr are pipes owned by `pipe-supervisor.mjs`, which writes `stdout.log`, `stderr.log` and `combined.log`. The only scope difference is the fd 3 owner watch. Promotion writes `release\n` into that watch, and the supervisor stops watching without touching the command. The same process, pid and files continue. No byte is lost at the transition.
 
-Evidence: `pty-durability.test.ts` — "a promoted default pipe survives the Pi that promoted it". `workspace.test.ts` — "a promoted default pipe record enters the workspace scan".
+Evidence: `pty-durability.test.ts` — "a promoted default pipe survives the Pi that promoted it". `registry.test.ts` — "promotion widens default pipe and pty sessions to workspace".
 
 ### 3.2 `ptyView` is a rendered screen, and the runtime writes the recording
 
@@ -144,7 +145,7 @@ The recipe now binds `script`'s stdout to a bounded writer that writes `combined
 
 ### 3.10 Adoption requires the writer lock
 
-Unless this process owns the workspace lock, `adoptWorkspace()` returns nothing. An observer still reads status and logs from disk, but it never becomes an owner by accident (C10). Surfacing a workspace completion also writes a `.surfaced` marker, so it is writer-only for the same reason.
+Unless this process owns the workspace lock, `adoptWorkspace()` returns nothing. An observer still reads status and logs from disk, but it never becomes an owner by accident (C10). Starting or promoting into the workspace, sending to a workspace terminal, and cancelling a live workspace execution require the same writer lock. Surfacing a workspace completion also writes a `.surfaced` marker, so it is writer-only for the same reason.
 
 ### 3.11 Sensitive environment variables are filtered by default
 

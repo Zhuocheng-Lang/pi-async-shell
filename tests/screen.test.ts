@@ -25,7 +25,10 @@ test("a line longer than the recorded width wraps", () => {
 });
 
 test("unknown escapes are consumed rather than printed", () => {
-  const snapshot = renderScreen("\u001b[?25l\u001b]0;title\u0007visible\r\n", { cols: 40, rows: 4 });
+  const snapshot = renderScreen(
+    "\u001b[?25l\u001b]0;title\u0007\u001b]8;;https://example.com\u001b\\visible\r\n",
+    { cols: 40, rows: 4 },
+  );
   assert.deepEqual(snapshot.lines, ["visible"]);
 });
 
@@ -58,4 +61,30 @@ test("an absurd cursor address is clamped instead of allocating", () => {
 test("backspace and erase-to-end-of-line behave like a prompt redraw", () => {
   const snapshot = renderScreen("prompt> ask\b\b\banswer\u001b[K\r\n", { cols: 40, rows: 4 });
   assert.deepEqual(snapshot.lines, ["prompt> answer"]);
+});
+
+test("tabs and both cursor-save spellings preserve the editing position", () => {
+  for (const [save, restore] of [["\u001b7", "\u001b8"], ["\u001b[s", "\u001b[u"]]) {
+    const snapshot = renderScreen(`a\tb${save}\r\nxy${restore}Z`, { cols: 20, rows: 4 });
+    assert.deepEqual(snapshot.lines, ["a       bZ", "xy"]);
+  }
+});
+
+test("character and line editing sequences change only their target cells", () => {
+  assert.deepEqual(renderScreen("abcdef\r\u001b[2G\u001b[2P", { cols: 20, rows: 4 }).lines, ["adef"]);
+  assert.deepEqual(renderScreen("abcdef\r\u001b[2G\u001b[2@", { cols: 20, rows: 4 }).lines, ["a  bcdef"]);
+  assert.deepEqual(renderScreen("abcdef\r\u001b[2G\u001b[2X", { cols: 20, rows: 4 }).lines, ["a  def"]);
+  assert.deepEqual(
+    renderScreen("one\r\ntwo\r\nthree\u001b[2;1H\u001b[1M", { cols: 20, rows: 4 }).lines,
+    ["one", "three"],
+  );
+});
+
+test("a full-width final character leaves the reported cursor inside the viewport", () => {
+  for (const input of ["x".repeat(20), `${" ".repeat(19)}🙂`]) {
+    const snapshot = renderScreen(input, { cols: 20, rows: 4 });
+    assert.equal(snapshot.cursor.col, 19);
+    assert.equal(snapshot.cursor.row, 0);
+    if (input.includes("🙂")) assert.equal(snapshot.lines[0], `${" ".repeat(19)}🙂`.trimEnd());
+  }
 });

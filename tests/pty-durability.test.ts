@@ -9,14 +9,14 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { ShellRegistry } from "../src/core/registry.ts";
+import { taggedPids } from "../src/core/identity.ts";
 import { acquireWorkspaceLock } from "../src/core/workspace-lock.ts";
-import { sleep, waitFor } from "./helpers.ts";
+import { sleep, tempCwd, waitFor } from "./helpers.ts";
 
 const producer = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "pty-producer.ts");
 
@@ -92,7 +92,7 @@ async function adoptAndDrive(cwd: string, record: Record, logPath: string, bindi
 }
 
 test("a workspace pty survives a hard Pi exit and is re-adopted", { timeout: 90_000 }, async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "pas-pty-durable-"));
+  const cwd = tempCwd("pas-pty-durable-");
   const { child, record, logPath } = await startProducer(cwd);
   assert.equal(record.scope, "workspace");
   assert.equal(await waitFor(() => countTicks(logPath) >= 3, 15_000), true, "the pty must produce output");
@@ -101,14 +101,13 @@ test("a workspace pty survives a hard Pi exit and is re-adopted", { timeout: 90_
   // writing: this is the leak the old spawn recipe left behind, now intentional.
   child.kill("SIGKILL");
   const before = countTicks(logPath);
-  await sleep(900);
-  assert.ok(countTicks(logPath) > before, "output must keep landing in the log");
+  assert.equal(await waitFor(() => countTicks(logPath) > before, 10_000), true, "output must keep landing in the log");
 
   await adoptAndDrive(cwd, record, logPath);
 });
 
 test("a promoted pty survives the Pi that promoted it", { timeout: 90_000 }, async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "pas-pty-promote-"));
+  const cwd = tempCwd("pas-pty-promote-");
   const { child, record, logPath } = await startProducer(cwd, "promote");
   assert.equal(record.scope, "workspace", "promotion widened the scope");
   assert.equal(await waitFor(() => countTicks(logPath) >= 3, 15_000), true, "the pty must produce output");
@@ -118,51 +117,47 @@ test("a promoted pty survives the Pi that promoted it", { timeout: 90_000 }, asy
   // of the retracted R2.
   child.kill("SIGKILL");
   const before = countTicks(logPath);
-  await sleep(900);
-  assert.ok(countTicks(logPath) > before, "a promoted pty must outlive its promoter");
+  assert.equal(await waitFor(() => countTicks(logPath) > before, 10_000), true, "a promoted pty must outlive its promoter");
 
   await adoptAndDrive(cwd, record, logPath);
 });
 
 test("a promoted default pipe survives the Pi that promoted it", { timeout: 90_000 }, async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "pas-pipe-promote-"));
+  const cwd = tempCwd("pas-pipe-promote-");
   const { child, record, logPath } = await startProducer(cwd, "promote", "pipe");
   assert.equal(record.scope, "workspace");
   assert.equal(await waitFor(() => countTicks(logPath) >= 3, 15_000), true);
 
   child.kill("SIGKILL");
   const before = countTicks(logPath);
-  await sleep(900);
-  assert.ok(countTicks(logPath) > before, "the released pipe supervisor must keep writing");
+  assert.equal(await waitFor(() => countTicks(logPath) > before, 10_000), true, "the released pipe supervisor must keep writing");
 
   await adoptAndDrive(cwd, record, logPath, "pipe");
 });
 
 test("an unpromoted session pty stops when its owner is killed", { timeout: 30_000 }, async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "pas-pty-owner-loss-"));
+  const cwd = tempCwd("pas-pty-owner-loss-");
   const { child, record, logPath } = await startProducer(cwd, "session", "pty");
   assert.equal(record.scope, "session");
   assert.equal(await waitFor(() => countTicks(logPath) >= 3, 20_000), true);
 
   child.kill("SIGKILL");
-  // The recording now passes through a writer that never stops reading, so the
-  // owner-loss tear-down has to work through one more process than before: the
-  // wrapper's watcher signals the group, and the terminal must still go with it.
-  await sleep(2500);
+  // Prove the tagged tree is gone instead of inferring it from a quiet log.
+  assert.equal(await waitFor(() => taggedPids(record.id).length === 0, 15_000), true, "fd 3 EOF must tear down the terminal tree");
   const before = countTicks(logPath);
-  await sleep(700);
-  assert.equal(countTicks(logPath), before, "fd 3 EOF must tear down an owned session terminal");
+  await sleep(150);
+  assert.equal(countTicks(logPath), before, "a dead terminal must not keep recording ticks");
 });
 
 test("an unpromoted session pipe stops when its owner is killed", { timeout: 30_000 }, async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "pas-pipe-owner-loss-"));
+  const cwd = tempCwd("pas-pipe-owner-loss-");
   const { child, record, logPath } = await startProducer(cwd, "session", "pipe");
   assert.equal(record.scope, "session");
   assert.equal(await waitFor(() => countTicks(logPath) >= 3, 15_000), true);
 
   child.kill("SIGKILL");
-  await sleep(1500);
+  assert.equal(await waitFor(() => taggedPids(record.id).length === 0, 15_000), true, "fd 3 EOF must tear down the pipe tree");
   const before = countTicks(logPath);
-  await sleep(700);
-  assert.equal(countTicks(logPath), before, "fd 3 EOF must tear down an owned session execution");
+  await sleep(150);
+  assert.equal(countTicks(logPath), before, "a dead pipe execution must not keep recording ticks");
 });

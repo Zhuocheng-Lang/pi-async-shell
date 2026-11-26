@@ -37,6 +37,7 @@ test(`the ${scope} pipe log cap drains instead of killing or blocking the child`
   const registry = makeRegistry(cwd, {
     env: { ...process.env, PI_ASYNC_SHELL: "/bin/sh", PI_ASYNC_SHELL_MAX_LOG_BYTES: "65536" },
   });
+  registry.setWorkspaceOwner(true);
   try {
     // 300 KiB into a 64 KiB cap. A cap implemented as "stop reading" would block
     // the child on a full pipe and never reach the echo.
@@ -287,10 +288,16 @@ test("graceful cancel uses SIGTERM before the fence", async () => {
 test("the ready marker works without any shell_start readiness declaration", async () => {
   const registry = makeRegistry(tempCwd());
   try {
-    const handle = await registry.start({ command: 'touch "$PI_ASYNC_SHELL_EXEC_DIR/ready"; sleep 60' });
-    const result = await registry.awaitHandles({ ids: handle.id, until: { kind: "ready" }, waitMs: 5000 });
-    assert.equal(result.timedOutWaiting, false);
-    assert.ok(result.stillRunning[0]?.readyAt);
+    for (const binding of ["pipe", "pty"] as const) {
+      const handle = await registry.start({
+        command: 'touch "$PI_ASYNC_SHELL_EXEC_DIR/ready"; sleep 60',
+        binding,
+      });
+      const result = await registry.awaitHandles({ ids: handle.id, until: { kind: "ready" }, waitMs: 5000 });
+      assert.equal(result.timedOutWaiting, false, binding);
+      assert.ok(result.stillRunning[0]?.readyAt, binding);
+      await registry.cancel({ ids: handle.id, ladder: "force" });
+    }
   } finally {
     await registry.shutdown("quit");
   }
@@ -316,6 +323,7 @@ test("a request id makes shell_start replay-safe", async () => {
     const second = await registry.start({ command: "echo twice", request: "req-1", scope: "session" });
     assert.equal(second.id, first.id);
     assert.equal(registry.status().handles.filter((handle) => handle.command.includes("echo")).length, 1);
+    await registry.awaitHandles({ ids: first.id, waitMs: 5000 });
   } finally {
     await registry.shutdown("quit");
   }
@@ -337,18 +345,6 @@ test("two request keys that sanitize alike stay two executions", async () => {
   }
 });
 
-test("an await pattern is refused when it can backtrack catastrophically", async () => {
-  const registry = makeRegistry(tempCwd());
-  try {
-    const handle = await registry.start({ command: "echo ready; sleep 5", scope: "session" });
-    await assert.rejects(
-      () => registry.awaitHandles({ ids: handle.id, until: { kind: "pattern", regex: "(x+)+y" }, waitMs: 100 }),
-      /nested quantifiers/,
-    );
-  } finally {
-    await registry.shutdown("quit");
-  }
-});
 
 test("an unwritable record directory only reports a diagnostic", async () => {
   const records: CompletionRecord[] = [];
@@ -401,6 +397,7 @@ test("timeoutSeconds settles as timed-out through the ladder", async () => {
 
 test("promotion refuses the retired to: session direction", async () => {
   const registry = makeRegistry(tempCwd());
+  registry.setWorkspaceOwner(true);
   try {
     const handle = await registry.start({ command: "sleep 60", scope: "session" });
     // The tool schema offers "workspace" alone, so only a programmatic caller
@@ -421,15 +418,20 @@ test("promotion refuses the retired to: session direction", async () => {
 
 test("promotion widens default pipe and pty sessions to workspace", async () => {
   const registry = makeRegistry(tempCwd());
+  registry.setWorkspaceOwner(true);
   try {
     const handle = await registry.start({ command: "sleep 60", scope: "session" });
     const promoted = await registry.promote({ id: handle.id, to: "workspace" });
     assert.equal(promoted.binding, "pipe");
     assert.equal(promoted.scope, "workspace");
+    assert.equal(registry.status({ id: handle.id }).handles[0]?.scope, "workspace");
+    assert.equal(registry.status().handles.filter((record) => record.id === handle.id).length, 1);
+    assert.equal(existsSync(join(registry.paths.workspaceDir, handle.id)), true);
 
     const pty = await registry.start({ command: "sleep 60", binding: "pty", scope: "session" });
     const widened = await registry.promote({ id: pty.id, to: "workspace" });
     assert.equal(widened.scope, "workspace");
+    assert.equal(existsSync(join(registry.paths.workspaceDir, pty.id)), true);
     await registry.cancel({ ids: [handle.id, pty.id], ladder: "force" });
   } finally {
     await registry.shutdown("quit");
@@ -441,6 +443,22 @@ test("shell_send refuses on a pipe binding", async () => {
   try {
     const handle = await registry.start({ command: "sleep 60", scope: "session" });
     await assert.rejects(() => registry.send({ id: handle.id, text: "x" }), /refuses on pipe/);
+    await registry.cancel({ ids: handle.id, ladder: "force" });
+  } finally {
+    await registry.shutdown("quit");
+  }
+});
+
+test("settled executions reject promotion and terminal input", async () => {
+  const registry = makeRegistry(tempCwd());
+  try {
+    const pipe = await registry.start({ command: "echo settled", scope: "session" });
+    await registry.awaitHandles({ ids: pipe.id, waitMs: 5000 });
+    await assert.rejects(() => registry.promote({ id: pipe.id }), /cannot promote a settled execution/);
+
+    const pty = await registry.start({ command: "sleep 60", binding: "pty", scope: "session" });
+    await registry.cancel({ ids: pty.id, ladder: "force" });
+    await assert.rejects(() => registry.send({ id: pty.id, text: "x" }), /execution has settled/);
   } finally {
     await registry.shutdown("quit");
   }

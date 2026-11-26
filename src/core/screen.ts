@@ -213,7 +213,9 @@ class Grid {
       lines,
       cols: this.cols,
       rows: this.rows,
-      cursor: { row: this.row - this.top, col: this.col },
+      // A full final column is a deferred wrap internally, not a cursor
+      // position outside the viewport exposed to callers.
+      cursor: { row: this.row - this.top, col: Math.min(this.col, this.cols - 1) },
       addressed: this.addressed,
     };
   }
@@ -411,7 +413,7 @@ export function renderScreen(input: string, options: ScreenOptions = {}): Screen
       index += 1;
       continue;
     }
-    const code = char.codePointAt(0) as number;
+    const code = input.codePointAt(index) as number;
     if (code > 0xffff) {
       grid.write(String.fromCodePoint(code));
       index += 2;

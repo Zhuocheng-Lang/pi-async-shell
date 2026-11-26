@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import fc from "fast-check";
@@ -8,6 +7,7 @@ import fc from "fast-check";
 import { stripAnsi } from "../src/core/ansi.ts";
 import { clearIndexCache, readLog } from "../src/core/log-manager.ts";
 import { renderScreen } from "../src/core/screen.ts";
+import { tempCwd } from "./helpers.ts";
 
 /**
  * Properties for the three modules that answer "what did this execution print".
@@ -22,17 +22,44 @@ import { renderScreen } from "../src/core/screen.ts";
 const CASE_COUNTS = { numRuns: 120 };
 const FILE_CASE_COUNTS = { numRuns: 50 };
 
+const terminalFragments = fc.constantFrom(
+  "\u001b[2J",
+  "\u001b[H",
+  "\u001b[2;1H",
+  "\u001b[31m",
+  "\u001b[0m",
+  "\u001b]0;title\u0007",
+  "\u001b]8;;https://example.com\u001b\\",
+  "\r",
+  "\n",
+  "\b",
+  "\t",
+  "中文",
+  "🙂",
+);
+const terminalText = fc.oneof(
+  fc.string({ maxLength: 200 }),
+  fc
+    .array(fc.oneof(fc.string({ maxLength: 8 }), terminalFragments), { maxLength: 50 })
+    .map((parts) => parts.join("")),
+);
+
 function writeFixture(text: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "pas-property-"));
+  const dir = tempCwd("pas-property-");
   const path = join(dir, "combined.log");
   writeFileSync(path, text);
   clearIndexCache();
   return path;
 }
 
+test("stripAnsi consumes OSC sequences terminated by BEL or ST", () => {
+  assert.equal(stripAnsi("before\u001b]0;title\u0007after"), "beforeafter");
+  assert.equal(stripAnsi("before\u001b]8;;https://example.com\u001b\\after"), "beforeafter");
+});
+
 test("stripAnsi is idempotent and leaves no escape introducer", () => {
   fc.assert(
-    fc.property(fc.string({ maxLength: 400 }), (input) => {
+    fc.property(terminalText, (input) => {
       const once = stripAnsi(input);
       assert.equal(stripAnsi(once), once, "a second pass changed the text");
       assert.equal(once.includes("\u001B"), false, "an ESC survived the strip");
@@ -44,7 +71,7 @@ test("stripAnsi is idempotent and leaves no escape introducer", () => {
 test("renderScreen keeps the cursor inside the declared viewport", () => {
   fc.assert(
     fc.property(
-      fc.string({ maxLength: 600 }),
+      terminalText,
       fc.integer({ min: 20, max: 120 }),
       fc.integer({ min: 4, max: 40 }),
       (input, cols, rows) => {
@@ -59,7 +86,7 @@ test("renderScreen keeps the cursor inside the declared viewport", () => {
           snapshot.cursor.col >= 0 && snapshot.cursor.col < cols,
           "col " + snapshot.cursor.col + " of " + cols,
         );
-        assert.ok(snapshot.lines.length <= rows + 1, "the viewport grew to " + snapshot.lines.length + " lines");
+        assert.ok(snapshot.lines.length <= rows, "the viewport grew to " + snapshot.lines.length + " lines");
       },
     ),
     CASE_COUNTS,

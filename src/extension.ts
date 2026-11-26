@@ -58,6 +58,8 @@ interface ExtensionState {
 }
 
 const state: ExtensionState = {
+  // SAFETY: piAsyncShell assigns state.pi before any lifecycle event or tool can
+  // read it; the placeholder only avoids making every consumer optional.
   pi: undefined as unknown as ExtensionAPI,
   busy: false,
   pending: [],
@@ -199,13 +201,19 @@ const startResultSchema = Type.Object({
 
 /** Structured content must not carry explicit undefined values. */
 function compact<T>(value: T): T {
-  if (Array.isArray(value)) return value.map((item) => compact(item)) as unknown as T;
+  if (Array.isArray(value)) {
+    // SAFETY: in this branch T is an array, and compacting each element keeps
+    // the same array shape while removing undefined object properties.
+    return value.map((item) => compact(item)) as unknown as T;
+  }
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       if (entry === undefined) continue;
       out[key] = compact(entry);
     }
+    // SAFETY: compact is called only with JSON-shaped tool results. In this
+    // branch T is an object record, and rebuilding it preserves that shape.
     return out as T;
   }
   return value;
@@ -213,6 +221,8 @@ function compact<T>(value: T): T {
 
 /** JSON-safe structured content: no undefined values, no class instances. */
 function json(value: unknown): JsonObject {
+  // SAFETY: every call site supplies a tool-result object; compact recursively
+  // removes undefined values and class instances, leaving JSON-compatible data.
   return compact(value) as unknown as JsonObject;
 }
 
@@ -642,6 +652,18 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     assertLinux();
+    if (event.reason !== "reload") {
+      // Extension modules can be reused by another session in the same process.
+      // Delivery state belongs to one activation; a reload is the exception
+      // because its pending records and delivered ids must survive the handoff.
+      if (state.flushTimer) clearTimeout(state.flushTimer);
+      if (state.uiTimer) clearTimeout(state.uiTimer);
+      state.flushTimer = undefined;
+      state.uiTimer = undefined;
+      state.busy = false;
+      state.pending = [];
+      state.delivered.clear();
+    }
     // No tool call survives an activation, so no claim can either. A record
     // that settles after this point must be able to announce itself.
     state.settleClaims.clear();
@@ -697,7 +719,13 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     await registry.shutdown(event.reason);
     releaseWorkspaceLock(registry.paths);
     state.registry = undefined;
+    if (state.flushTimer) clearTimeout(state.flushTimer);
+    if (state.uiTimer) clearTimeout(state.uiTimer);
+    state.flushTimer = undefined;
+    state.uiTimer = undefined;
+    state.busy = false;
     state.pending = [];
+    state.delivered.clear();
     state.settleClaims.clear();
     state.heldSettles.clear();
     state.ctx?.ui.setStatus(STATUS_KEY, undefined);
@@ -1191,7 +1219,6 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
         ctx.ui.notify(lines.join("\n"), "info");
         return;
       }
-      ctx.ui.notify(lines.join("\n"), "info");
       const choice = await ctx.ui.select(
         `async-shell (${status.running} running)`,
         status.handles.map((handle) => `${handle.id} · ${handle.name} · ${handle.status}`),

@@ -3,7 +3,11 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { keyToBytes } from "../src/core/registry.ts";
-import { makeRegistry, sleep, tempCwd, waitFor } from "./helpers.ts";
+import { makeRegistry, tempCwd, waitFor } from "./helpers.ts";
+
+async function waitForStdin(dir: string): Promise<void> {
+  assert.equal(await waitFor(() => existsSync(join(dir, "stdin.fifo")), 5000), true, "the pty stdin FIFO must exist");
+}
 
 test("pty gives the child a terminal and accepts stdin", async () => {
   const registry = makeRegistry(tempCwd("pas-pty-"));
@@ -86,7 +90,7 @@ test("a pty cancel interrupts the terminal instead of waiting out the grace peri
   const registry = makeRegistry(tempCwd("pas-pty-"));
   try {
     const handle = await registry.start({ command: "cat", binding: "pty", scope: "session" });
-    await sleep(400);
+    await waitForStdin(handle.log.dir);
     const started = Date.now();
     const results = await registry.cancel({ ids: handle.id, ladder: "graceful", graceMs: 3000 });
     const elapsed = Date.now() - started;
@@ -130,7 +134,7 @@ test("a start request key and a send request key are separate namespaces", async
       scope: "session",
       request: "shared-key",
     });
-    await sleep(250);
+    await waitForStdin(handle.log.dir);
     const sent = await registry.send({ id: handle.id, text: "abc\n", request: "shared-key", settleMs: 200 });
     assert.equal(sent.wrote, true, "a start record must not answer for a send");
   } finally {
@@ -161,28 +165,12 @@ test("pty accepts key chords through shell_send", async () => {
       binding: "pty",
       scope: "session",
     });
-    await sleep(250);
+    await waitForStdin(handle.log.dir);
     await registry.send({ id: handle.id, text: "abc", keys: ["Enter"], settleMs: 400 });
     const result = await registry.awaitHandles({ ids: handle.id, waitMs: 5000 });
     assert.equal(result.settled, true);
     const view = await registry.read({ id: handle.id, stream: "ptyView" });
     assert.match(view.text, /got:abc/);
-  } finally {
-    await registry.shutdown("quit");
-  }
-});
-
-test("a marker file declares readiness out of band", async () => {
-  const registry = makeRegistry(tempCwd("pas-pty-"));
-  try {
-    const handle = await registry.start({
-      command: 'sleep 0.2; touch "$PI_ASYNC_SHELL_EXEC_DIR/ready"; sleep 60',
-      binding: "pty",
-      scope: "session",
-    });
-    const ready = await registry.awaitHandles({ ids: handle.id, until: { kind: "ready" }, waitMs: 5000 });
-    assert.equal(ready.timedOutWaiting, false);
-    assert.ok(ready.stillRunning[0]?.readyAt, "readyAt is recorded as a milestone");
   } finally {
     await registry.shutdown("quit");
   }
@@ -196,7 +184,7 @@ test("a request id makes shell_send replay-safe", async () => {
       binding: "pty",
       scope: "session",
     });
-    await sleep(250);
+    await waitForStdin(handle.log.dir);
     const first = await registry.send({ id: handle.id, text: "abc\n", request: "send-1", settleMs: 200 });
     assert.equal(first.wrote, true);
     const second = await registry.send({ id: handle.id, text: "zzz\n", request: "send-1", settleMs: 100 });
@@ -214,6 +202,7 @@ test("workspace + pty is a reachable cell, not a coercion", async () => {
   const registry = makeRegistry(tempCwd("pas-pty-"), {
     onDiagnostic: (message) => diagnostics.push(message),
   });
+  registry.setWorkspaceOwner(true);
   try {
     const handle = await registry.start({ command: "echo durable-pty", binding: "pty", scope: "workspace" });
     assert.equal(handle.binding, "pty");
@@ -243,18 +232,6 @@ test("a pty starts in a workspace whose path contains a space", async () => {
   }
 });
 
-test("a live pty can be promoted to workspace", async () => {
-  const registry = makeRegistry(tempCwd("pas-pty-"));
-  try {
-    const handle = await registry.start({ command: "sleep 60", binding: "pty", scope: "session" });
-    const promoted = await registry.promote({ id: handle.id, to: "workspace" });
-    assert.equal(promoted.scope, "workspace");
-    assert.equal(existsSync(join(registry.paths.workspaceDir, handle.id)), true);
-    await registry.cancel({ ids: handle.id, ladder: "force" });
-  } finally {
-    await registry.shutdown("quit");
-  }
-});
 
 test("a pty recording stops at the log cap without killing the command", async () => {
   // `script --output-limit` would end the session at the limit, which turns a
