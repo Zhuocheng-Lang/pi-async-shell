@@ -157,6 +157,49 @@ test("key names accept the spellings the documentation uses", () => {
   assert.throws(() => keyToBytes("Hyperkey"), /does not know the key/);
 });
 
+test("every Ctrl+letter maps to the control byte that letter names", () => {
+  for (let code = "a".charCodeAt(0); code <= "z".charCodeAt(0); code += 1) {
+    const letter = String.fromCharCode(code);
+    const control = String.fromCharCode(code - 96);
+    const position = control.charCodeAt(0);
+    assert.ok(position >= 1 && position <= 26, "Ctrl+" + letter + " produced 0x" + position.toString(16));
+    // Every spelling the documentation offers is the same key, not four keys.
+    for (const spelling of [
+      "Ctrl+" + letter,
+      "CTRL+" + letter.toUpperCase(),
+      "ctrl " + letter,
+      "ctrl-" + letter,
+      "Ctrl_" + letter,
+    ]) {
+      assert.equal(keyToBytes(spelling), control, spelling);
+    }
+  }
+});
+
+test("a single character is its own key, in whatever script it was written", () => {
+  assert.equal(keyToBytes("y"), "y");
+  assert.equal(keyToBytes("Y"), "Y");
+  assert.equal(keyToBytes("/"), "/");
+  assert.equal(keyToBytes("中"), "中");
+  assert.equal(keyToBytes(" "), " ", "the early return keeps a literal space literal");
+  // Counted by code point, not by UTF-16 unit: an astral character is two units
+  // of one character, so it passes through as literal input like the CJK
+  // character above instead of falling to the named-key table and throwing.
+  assert.equal(keyToBytes("🙂"), "🙂");
+});
+
+test("an unknown key name throws, naming the key and what it accepts", () => {
+  assert.throws(
+    () => keyToBytes("Hyper key"),
+    (error: Error) => {
+      assert.match(error.message, /does not know the key "Hyper key"/, "the message must echo the name the caller wrote");
+      assert.match(error.message, /enter, return, tab/, "the message must list the named keys");
+      assert.match(error.message, /Ctrl\+<letter>/, "the message must say that a control chord is accepted");
+      return true;
+    },
+  );
+});
+
 test("pty accepts key chords through shell_send", async () => {
   const registry = makeRegistry(tempCwd("pas-pty-"));
   try {

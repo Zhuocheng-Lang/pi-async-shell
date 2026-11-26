@@ -48,12 +48,14 @@ function normalizeKeyName(key: string): string {
 /**
  * Turn a key name into the bytes a terminal would have sent.
  *
+ * A single character stands for itself, counted by code point rather than by
+ * UTF-16 unit, so an emoji is one character here the way a CJK character is.
  * A name nobody recognizes throws. Writing the name as literal text instead
  * reports `wrote: true`, so a typo in a key chord looks like a delivered
  * keystroke that the program simply ignored, and the caller debugs the program.
  */
 export function keyToBytes(key: string): string {
-  if (key.length === 1) return key; // a single character is itself
+  if ([...key].length === 1) return key; // one character, however many units it takes
   const name = normalizeKeyName(key);
   const named = KEY_BYTES[name];
   if (named !== undefined) return named;

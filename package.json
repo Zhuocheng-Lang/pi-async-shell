@@ -57,7 +57,7 @@
     "link-host": "node scripts/link-host.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.ts\"",
-    "test:unit": "node --test --test-concurrency=1 tests/cochange.test.ts tests/execution-lifecycle.test.ts tests/log-manager.test.ts tests/maintenance.test.ts tests/manifest.test.ts tests/pattern.test.ts tests/properties.test.ts tests/reload.test.ts tests/screen.test.ts tests/shell-policy.test.ts",
+    "test:unit": "node --test --test-concurrency=1 tests/cochange.test.ts tests/execution-lifecycle.test.ts tests/log-manager.test.ts tests/maintenance.test.ts tests/manifest.test.ts tests/pattern.test.ts tests/presentation.test.ts tests/properties.test.ts tests/records.test.ts tests/reload.test.ts tests/screen.test.ts tests/shell-policy.test.ts",
     "bench": "node bench/run-bench.ts",
     "dsm": "node scripts/dsm.mjs",
     "cochange": "node scripts/cochange.mjs",
