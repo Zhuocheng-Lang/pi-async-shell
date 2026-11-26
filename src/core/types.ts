@@ -17,14 +17,44 @@ export type Binding = "pipe" | "pty";
  */
 export type Delivery = "steer" | "settle";
 
-export type ShellStatus =
-  | "starting"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "timed-out"
-  | "lost";
+/**
+ * The terminal geometry a `pty` execution runs at.
+ *
+ * One declaration, used by the launcher, the record the spawn writes and the
+ * screen replay. Three copies of these numbers is how a child and a replay end
+ * up disagreeing about the width without anything failing.
+ */
+export interface PtySize {
+  cols: number;
+  rows: number;
+}
+
+/** The bounds every layer clamps a terminal geometry to, and the default it assumes. */
+export const PTY_SIZE = {
+  minCols: 20,
+  maxCols: 500,
+  minRows: 4,
+  maxRows: 200,
+  defaultCols: 80,
+  defaultRows: 24,
+} as const;
+
+/** Clamp a geometry to what the spawn and the screen model both accept. */
+export function clampPtySize(size: { cols?: number; rows?: number }): PtySize {
+  return {
+    cols: clampDimension(size.cols, PTY_SIZE.minCols, PTY_SIZE.maxCols, PTY_SIZE.defaultCols),
+    rows: clampDimension(size.rows, PTY_SIZE.minRows, PTY_SIZE.maxRows, PTY_SIZE.defaultRows),
+  };
+}
+
+/** A missing or non-positive dimension means "unset", which takes the default. */
+function clampDimension(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (!value || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+export type TerminalShellStatus = "completed" | "failed" | "cancelled" | "timed-out" | "lost";
+export type ShellStatus = "starting" | "running" | TerminalShellStatus;
 
 export const TERMINAL_STATUSES: readonly ShellStatus[] = [
   "completed",
@@ -34,7 +64,7 @@ export const TERMINAL_STATUSES: readonly ShellStatus[] = [
   "lost",
 ];
 
-export function isTerminal(status: ShellStatus): boolean {
+export function isTerminal(status: ShellStatus): status is TerminalShellStatus {
   return TERMINAL_STATUSES.includes(status);
 }
 

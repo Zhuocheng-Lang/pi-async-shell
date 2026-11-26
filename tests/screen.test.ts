@@ -32,6 +32,15 @@ test("unknown escapes are consumed rather than printed", () => {
   assert.deepEqual(snapshot.lines, ["visible"]);
 });
 
+test("an SS3 sequence is consumed rather than leaving its final byte as text", () => {
+  // ESC O and one final byte carries no text. Consuming only ESC and O left the
+  // final byte in the grid, so an echoed F1 (ESC O P) showed up as a stray "P".
+  assert.deepEqual(renderScreen("A\u001bOPB").lines, ["AB"]);
+  assert.deepEqual(renderScreen("key\u001bOA!").lines, ["key!"]);
+  assert.deepEqual(renderScreen("\u001b=B").lines, ["B"]);
+  assert.deepEqual(renderScreen("\u001bOP").lines, []);
+});
+
 test("the viewport follows the cursor once output scrolls past the height", () => {
   const stream = Array.from({ length: 6 }, (_, index) => `line ${index + 1}\r\n`).join("");
   const snapshot = renderScreen(stream, { cols: 40, rows: 3 });

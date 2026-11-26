@@ -80,8 +80,8 @@ export function applyPipelineStatus(
   return { command, exitSource: "last-command" };
 }
 
-/** The one-line shell policy included in the active tools' prompt guidelines. */
+/** The one-line shell policy included in shell_start's description. */
 export function describeShellPolicy(policy: ShellPolicy): string {
-  const origin = policy.source === "PI_ASYNC_SHELL" ? "explicit PI_ASYNC_SHELL override" : "fixed default; ambient $SHELL is ignored";
-  return `shell_start runs commands with \`${policy.shell} -c <command>\` (${origin}).`;
+  const origin = policy.source === "PI_ASYNC_SHELL" ? "explicit PI_ASYNC_SHELL override" : "fixed default that ignores ambient $SHELL";
+  return `Commands run with \`${policy.shell} -c <command>\` (${origin}).`;
 }

@@ -18,7 +18,7 @@ test("the default command shell is bash, not the ambient non-POSIX login shell",
   assert.equal(policy.shell, "/bin/bash");
   assert.equal(policy.source, "fallback");
   assert.equal(policy.posix, true);
-  assert.match(describeShellPolicy(policy), /ambient \$SHELL is ignored/);
+  assert.match(describeShellPolicy(policy), /ignores ambient \$SHELL/);
   assert.equal(resolveShell({ PI_ASYNC_SHELL: "/usr/bin/fish" }).posix, false);
   assert.equal(resolveShell({ PI_ASYNC_SHELL: "/bin/sh" }).shell, "/bin/sh");
 

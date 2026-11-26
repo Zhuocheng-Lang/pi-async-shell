@@ -29,6 +29,7 @@ interface Harness {
   faux: ReturnType<typeof createFauxCore>;
   callTool(name: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
   callToolResult(name: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any>;
+  toolDefinition(name: string): Record<string, any>;
   toolSchema(name: string): Record<string, any>;
   refresh(): void;
   shutdown(): Promise<void>;
@@ -120,6 +121,11 @@ async function createHarness(
         .join("\n");
     },
     callToolResult,
+    toolDefinition(name) {
+      const definition = definitions.get(name);
+      if (!definition) throw new Error(`tool not registered: ${name}`);
+      return definition;
+    },
     toolSchema(name) {
       const definition = definitions.get(name);
       if (!definition) throw new Error(`tool not registered: ${name}`);
@@ -243,22 +249,76 @@ test("a real Pi session drives the seven shell tools end to end", { timeout: 120
     const startSchema = harness.toolSchema("shell_start");
     assert.deepEqual(startSchema.properties.scope.enum, ["session", "workspace"]);
     assert.deepEqual(startSchema.properties.delivery.enum, ["steer", "settle"]);
+    assert.match(startSchema.properties.binding.description, /pipe default.*pty/);
+    assert.equal(
+      harness.toolDefinition("shell_start").outputSchema.properties.triggerOnCompletion.type,
+      "boolean",
+    );
     assert.equal(startSchema.properties.readiness, undefined);
     const awaitSchema = harness.toolSchema("shell_await");
+    const patternSchema = awaitSchema.properties.until.anyOf.find(
+      (candidate: Record<string, any>) => candidate.properties?.kind?.const === "pattern",
+    );
+    assert.ok(patternSchema);
+    assert.match(patternSchema.properties.stream.description, /pty records one stream/);
+    assert.match(patternSchema.properties.since.description, /current end of the stream/);
     assert.equal(awaitSchema.properties.waitMs.maximum, undefined);
     assert.equal(startSchema.properties.inlineSettleMs.maximum, undefined);
     assert.deepEqual(harness.toolSchema("shell_read").properties.mode.enum, ["tail", "head", "offset", "grep", "all"]);
     assert.equal(awaitSchema.properties.cancelOnFirstFailure, undefined);
-    assert.match(harness.session.systemPrompt, /shell_start runs commands with `\/bin\/sh -c <command>`/);
-    // A wake-up needs something that exits, so the guidance asks whether the
-    // wait is needed at all before it names a watcher.
-    assert.match(
-      harness.session.systemPrompt,
-      /When no later action in the task depends on an external state change/,
+
+    const definitions = new Map(shellTools.map((name) => [name, harness.toolDefinition(name)]));
+    const guidelines = new Map(
+      shellTools.map((name) => [name, (definitions.get(name)?.promptGuidelines ?? []) as string[]]),
     );
-    assert.match(
-      harness.session.systemPrompt,
-      /agent_before_settle waits for each live, unready session execution with notifyOnCompletion and triggerOnCompletion enabled/,
+    const flattenedGuidelines = [...guidelines.values()].flat();
+    assert.equal(
+      new Set(flattenedGuidelines).size,
+      flattenedGuidelines.length,
+      "codemode repeats each tool's guidelines, so no guideline may be shared",
+    );
+    assert.equal(definitions.get("shell_promote")?.promptGuidelines, undefined);
+    assert.equal(definitions.get("shell_send")?.promptGuidelines, undefined);
+    const guidance = (name: string): string => (guidelines.get(name) ?? []).join("\n");
+    assert.match(definitions.get("shell_start")?.description, /Commands run with `\/bin\/sh -c <command>`/);
+    assert.match(startSchema.properties.scope.description, /print\/JSON mode/);
+    assert.match(startSchema.properties.delivery.description, /steer default.*settle/);
+    assert.match(guidance("shell_start"), /shell_read instead of tail/);
+    assert.match(guidance("shell_await"), /at most one long wait/);
+    assert.match(guidance("shell_await"), /Wait only for an outcome/);
+    assert.match(guidance("shell_read"), /Use grep to locate output/);
+    assert.match(guidance("shell_cancel"), /leaves filesystem/);
+    assert.match(guidance("shell_status"), /status polling/);
+    for (const name of shellTools.filter((name) => name !== "shell_start")) {
+      assert.doesNotMatch(definitions.get(name)?.description, /Commands run with/);
+      assert.doesNotMatch(guidance(name), /shell_read instead of tail|Pass cwd instead/);
+    }
+    const schemaDescriptions = (schema: Record<string, any>): string[] => {
+      const descriptions: string[] = [];
+      const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          value.forEach(visit);
+          return;
+        }
+        if (!value || typeof value !== "object") return;
+        const record = value as Record<string, unknown>;
+        if (typeof record.description === "string") descriptions.push(record.description);
+        Object.values(record).forEach(visit);
+      };
+      visit(schema);
+      return descriptions;
+    };
+    const modelFacingText = shellTools
+      .flatMap((name) => [
+        definitions.get(name)?.description ?? "",
+        ...(guidelines.get(name) ?? []),
+        ...schemaDescriptions(harness.toolSchema(name)),
+      ])
+      .join("\n");
+    assert.doesNotMatch(modelFacingText, /agent_before_settle|session_shutdown/);
+    assert.ok(
+      modelFacingText.length < 8000,
+      `model-facing tool text exceeds its character budget: ${modelFacingText.length}`,
     );
 
     // Turn 1: start, await, read — the causal barrier pi-background-tasks lacks.

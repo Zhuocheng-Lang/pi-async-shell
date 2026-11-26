@@ -46,7 +46,7 @@ pi -e npm:pi-async-shell         # 单次会话免安装试用（试一试总没
 pi install npm:pi-async-shell    # 安装到日常环境
 ```
 
-包内自带 `async-shell` Skill，开箱提供服务器启动、就绪标记、测试检索、所有权提升和 PTY 交互工作流规范。
+包内提供两个 Skill。`async-shell` 面向日常使用，涵盖服务器、就绪标记、测试、所有权提升和 PTY 工作流。`async-shell-maintainer` 面向本包自身的开发与维护。
 
 **如果你是受托评估本扩展的 Agent 或人类开发者**，在 `pi -e npm:pi-async-shell` 会话中粘贴下面这句话，即可在一个轮次内验证“输出正则等待 + PTY 交互输入 + 日志 grep”全流程：
 
@@ -130,7 +130,9 @@ const failures = await shell_read({
 
 | 文件 | 内容 |
 |---|---|
-| [skills/async-shell/SKILL.md](skills/async-shell/SKILL.md) | Agent 工作流规范：硬性规则、就绪标记、PTY 会话、所有权选择与等待时间预算。 |
+| [skills/async-shell/SKILL.md](skills/async-shell/SKILL.md) | 日常使用工作流：硬性规则、就绪标记、PTY 会话、所有权选择与等待时间预算。 |
+| [skills/async-shell-maintainer/SKILL.md](skills/async-shell-maintainer/SKILL.md) | 贡献者路由、验证命令和内部实现索引。 |
+| [docs/design/06-skill-boundaries.md](docs/design/06-skill-boundaries.md) | 日常使用与维护 skill 的路由及内容边界。 |
 | [bench/REPORT.md](bench/REPORT.md) | 与 Pi 内置 `bash` 及八个 npm 后台/任务扩展的可复现基准测试报告。 |
 | [docs/implementation-notes.md](docs/implementation-notes.md) | 运行时架构、磁盘存储结构、日志上限、垃圾回收与已知限制。 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境搭建、`pnpm verify`、运行基准测试与发版流程。 |

@@ -139,7 +139,7 @@ R2 最初读到的是：“`workspace` + `pty` 不可行；PTY master 无法活�
 
 ### C5. 输出持久，并且排空永不停
 
-日志上限绝不杀死进程。它也绝不停止排空管道。Linux 管道默认只缓冲 64 KiB，超过后子进程阻塞在 `write(2)`。一个靠暂停读取实现的上限，把日志策略变成了挂起。每一次 `pipe` 执行的输出都通过脱离监督器绑定到文件，监督器继续排空，只丢弃超出上限的字节。`pty` 录制由 `script(1)` 直接写盘。它没有可暂停的管道，也没有上限。文件一直长到运维手段或文件系统叫停为止。
+日志上限绝不杀死进程。它也绝不停止排空管道。Linux 管道默认只缓冲 64 KiB，超过后子进程阻塞在 `write(2)`。一个靠暂停读取实现的上限，把日志策略变成了挂起。每一次 `pipe` 执行的输出都通过脱离监督器绑定到文件，监督器继续排空，只丢弃超出上限的字节。有界写入器位于 `script(1)` 与 `pty` 录制文件之间。它同样持续读取，并且只保留达到同一上限前的前缀。
 
 ### C6. 身份稳定且抗 PID 复用
 
@@ -193,7 +193,7 @@ R2 最初读到的是：“`workspace` + `pty` 不可行；PTY master 无法活�
 3. PTY 与多路复用器已分离。`pty` 是用 `script(1)` 就能拿到的内核设施，在任何作用域都不需要 broker。
 4. 就绪、期望式提示交互、`lost` 状态、抗 PID 复用的身份都已升为一等公民。先例表显示它们各自都是上一稿漏掉的常规实践。
 5. **等待与所有权现在是两个问题**（C9、修正后的 R1），**一个工作区只有一个写者**（C10）。两条都来自阅读 `@earendil-works/pi-durable`，而它不是本项目支持的宿主。翻译成 `pi-coding-agent` 术语的过程见 `05-durability-and-containment.md`。
-6. **词汇统一到一处**（`00-terminology.md`），文档重新编号为 `00` 至 `05`。`carrier` 已作为术语废弃，`03-carrier-and-runtime-architecture.md` 现名 `04-runtime-architecture.md`。改名记录见 `05-durability-and-containment.md` §8，旧链接因此有据可查。
+6. **词汇统一到一处**（`00-terminology.md`），文档重新编号为 `00` 至 `06`。`carrier` 已作为术语废弃，`03-carrier-and-runtime-architecture.md` 现名 `04-runtime-architecture.md`。改名记录见 `05-durability-and-containment.md` §8，旧链接因此有据可查。
 7. **`pane` 绑定与 `shell_attach` 工具已删除，旧的 R2 主张已撤回。**
    只要持有 PTY master 的进程是脱离的、stdio 绑到文件，master 就能活过 Pi。所以 `workspace` + `pty` 不需要 broker。多路复用器唯一买来的能力是第三方附着，而附着已不在范围内（R3）。
 
@@ -202,7 +202,7 @@ R2 最初读到的是：“`workspace` + `pty` 不可行；PTY master 无法活�
 - **删除 `turn` 作用域**，连同落定时的强制取消与错误续跑。轮次边界不再杀死 `session` 执行。需要在一轮之内建立屏障的调用者使用 `shell_await`。
 - **删除 `shell_start.readiness`。**标记是 `$PI_ASYNC_SHELL_EXEC_DIR/ready`，模式是 `shell_await` 的条件。`immediate` 就绪随声明一起消失。
 - **每次 `pipe` 执行的输出都通过脱离监督器绑定到文件**。因此 `session` 管道无需重启即可提升到 `workspace`。早先“管道不能提升”的规则是父进程持有管道的后果，不是模型的规则。
-- **管道上限覆盖两个作用域**，并且排空而不杀死。早先“文件绑定的管道没有上限”描述的是旧的仅 `workspace` 文件绑定。现在监督器为两个作用域持有上限。`pty` 录制仍然不受上限约束。
+- **管道上限覆盖两个作用域**，并且排空而不杀死。早先“文件绑定的管道没有上限”描述的是旧的仅 `workspace` 文件绑定。现在监督器为两个作用域持有上限。`pty` 录制在 0.2.0 中仍不受上限约束。0.2.3 增加有界写入器，应用相同上限。
 - **删除 `cancelOnFirstFailure`**，随 `turn` 作用域一起消失。它取消的是已不存在的轮次组内的兄弟任务。
 - **默认命令 shell 是 `/bin/bash`，否则 `/bin/sh`**，环境 `$SHELL` 被忽略。`PI_ASYNC_SHELL` 是显式覆盖。
 
@@ -216,3 +216,4 @@ R2 最初读到的是：“`workspace` + `pty` 不可行；PTY master 无法活�
 - **[03. 执行模型与原语](03-execution-model-and-primitives.md)** —— 七个工具契约与选择流程。它还承载状态机与完成语义。
 - **[04. 运行时架构](04-runtime-architecture.md)** —— 各绑定如何 spawn、遏制如何执行。它还覆盖输出如何保持持久、reload 与重认领如何工作，以及存储如何回收。
 - **[05. Pi Durable 给了什么启发](05-durability-and-containment.md)** —— 它的机制构成的翻译表。它把这些机制映射到 `pi-coding-agent` 原语。它还记录它迫使 R1 做出的修正，以及借用在哪里停止。它点出两个第一方项目都没覆盖的进程遏制空白。
+- **[06. Skill 边界](06-skill-boundaries.md)** —— 日常使用与维护 skill 的路由及内容所有权契约。它把可观察的用户指导与贡献者流程、运行时内部机制分开。

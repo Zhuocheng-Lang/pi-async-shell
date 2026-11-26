@@ -173,3 +173,40 @@ test("screen reads support head, offset, and grep on the rendered viewport", asy
   assert.equal(grep.text, "2: beta\n3: alpha target");
   assert.match(grep.note ?? "", /1 matching line/);
 });
+
+test("a replay window aligns on a carriage return, so a redrawn screen is not empty", async () => {
+  const dir = tempCwd("pas-log-");
+  const path = join(dir, "ptyView.log");
+  // A progress bar draws with \r and never writes a newline. A window of the
+  // last 256 KiB therefore holds no newline at all, and aligning only on \n
+  // replayed nothing and reported an empty screen for 300 KiB of output.
+  writeFileSync(path, `${"filler ".repeat(43_000)}\rprogress: 99%\r`);
+  const outcome = await readScreenLog(path, { id: "x" }, { size: { cols: 40, rows: 6 } });
+  assert.equal(outcome.text, "progress: 99%");
+  assert.equal(outcome.truncated, true, "a windowed replay is not the whole recording");
+  assert.match(outcome.note ?? "", /the replay covered the last \d+ of \d+ bytes/);
+});
+
+test("a window with no line or carriage-return boundary says so instead of returning nothing", async () => {
+  const dir = tempCwd("pas-log-");
+  const path = join(dir, "ptyView.log");
+  writeFileSync(path, "y".repeat(300 * 1024));
+  const outcome = await readScreenLog(path, { id: "x" }, {});
+  assert.equal(outcome.text, "");
+  assert.equal(outcome.truncated, true, "an unreconstructable viewport is not a successful empty read");
+  assert.match(outcome.note ?? "", /could not be reconstructed/);
+});
+
+test("a screen read names no next page, and a missing size is reported as assumed", async () => {
+  const dir = tempCwd("pas-log-");
+  const path = join(dir, "ptyView.log");
+  writeFileSync(path, "alpha\r\nbeta\r\n");
+  const fallback = await readScreenLog(path, { id: "x", mode: "all" }, {});
+  assert.equal(fallback.range.nextByte, undefined, "viewport rows are not a pageable byte range");
+  assert.equal(fallback.range.nextLine, undefined);
+  assert.match(fallback.note ?? "", /default 80x24 was assumed/);
+
+  const sized = await readScreenLog(path, { id: "x" }, { size: { cols: 200, rows: 50 } });
+  assert.match(sized.note ?? "", /rendered 200x50 terminal screen/);
+  assert.doesNotMatch(sized.note ?? "", /was assumed/);
+});

@@ -38,6 +38,7 @@ The host packages are also declared in `peerDependencies` with a `*` range, whic
 | `pnpm typecheck` | `tsc --noEmit` over `src/` (including the shipped `.mjs` supervisor), `tests/`, `bench/` and `scripts/`. |
 | `pnpm test` | The full suite, one test file at a time. |
 | `pnpm test:unit` | Only the `tests/*.test.ts` files. |
+| `pnpm dsm` | The import matrix over `src/`: partitioned DSM, propagation cost, feedback edges, per-module fan-in and fan-out. A report, not a gate. `--format markdown` or `--format json` for a document or a tool, `--root <dir>` for another directory. |
 | `pnpm link-host` | Mirrors Pi's module store into `./node_modules` for the benchmark. |
 | `pnpm bench` | Regenerates `bench/out/results.json` and `bench/REPORT.md`. |
 | `pnpm run spec` | Type-checks the Quint model under `spec/` and simulates it: `spec:typecheck` then `spec:run`. `pnpm verify` does not call it. |
@@ -87,6 +88,7 @@ The model stays out of both. A run of `quint run` is a random walk with no fixed
 | The change | Where it goes |
 |---|---|
 | What the design is now | `docs/design/`, in both languages, in the same pull request |
+| Agent workflow routing and skill ownership | `docs/design/06-skill-boundaries.md`, then the owning file under `skills/` |
 | Why a rule exists, or what it replaced | `docs/adr/`, a new number. An accepted ADR is never edited |
 | A design that is not decided yet | `docs/rfcs/` |
 | What the code does, and how it is tested | `docs/implementation-notes.md` |

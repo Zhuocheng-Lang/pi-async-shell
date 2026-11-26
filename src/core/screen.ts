@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Zhuocheng-Lang
 // SPDX-License-Identifier: MPL-2.0
 
+import { clampPtySize, type PtySize } from "./types.ts";
+
 /**
  * A terminal screen, not a byte stream.
  *
@@ -15,9 +17,8 @@
  * unknown escape can never corrupt the text.
  */
 
-export interface ScreenOptions {
-  cols?: number;
-  rows?: number;
+/** The geometry is the one the child ran at, so a replay cannot invent its own. */
+export interface ScreenOptions extends Partial<PtySize> {
   /** Lines kept above the viewport. */
   scrollback?: number;
 }
@@ -32,8 +33,6 @@ export interface ScreenSnapshot {
   addressed: boolean;
 }
 
-const DEFAULT_COLS = 80;
-const DEFAULT_ROWS = 24;
 const DEFAULT_SCROLLBACK = 2000;
 
 class Grid {
@@ -53,8 +52,12 @@ class Grid {
   }
 
   constructor(options: ScreenOptions) {
-    this.cols = clamp(options.cols, 20, 500, DEFAULT_COLS);
-    this.rows = clamp(options.rows, 4, 200, DEFAULT_ROWS);
+    // The bounds and the default live in the vocabulary module, next to the type
+    // the spawn and the launcher use. A second copy here is how a recording made
+    // at 200 columns would be replayed at 80 without a failing test.
+    const size = clampPtySize(options);
+    this.cols = size.cols;
+    this.rows = size.rows;
     this.scrollback = clamp(options.scrollback, 0, 20_000, DEFAULT_SCROLLBACK);
   }
 
@@ -384,6 +387,13 @@ export function renderScreen(input: string, options: ScreenOptions = {}): Screen
       if (next === "8") {
         grid.restoreCursor();
         index += 2;
+        continue;
+      }
+      if (next === "O") {
+        // SS3 is ESC O and one final byte, and it carries no text. Consuming only
+        // ESC and O left the final byte to be printed as a character, so an
+        // echoed F1 (ESC O P) reached the screen as a stray "P".
+        index += 3;
         continue;
       }
       index += 2;

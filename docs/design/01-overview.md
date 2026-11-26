@@ -139,7 +139,7 @@ Graceful signal, grace period, forced kill, then verification that the tree is g
 
 ### C5. Output is durable and the drain never stops
 
-A log cap never kills the process. It never stops draining the pipe. On Linux a pipe holds 64 KiB by default, and after that the child blocks in `write(2)`. A cap that pauses reading turns a logging policy into a hang. Every `pipe` execution's output is file-backed through the detached supervisor, which continues to drain while it discards the bytes beyond the cap. A `pty` recording is written by `script(1)` directly to disk. It has no pipe to pause and no cap. The file grows until an operator or the filesystem stops it.
+A log cap never kills the process. It never stops draining the pipe. On Linux a pipe holds 64 KiB by default, and after that the child blocks in `write(2)`. A cap that pauses reading turns a logging policy into a hang. Every `pipe` execution's output is file-backed through the detached supervisor, which continues to drain while it discards the bytes beyond the cap. A bounded writer sits between `script(1)` and the `pty` recording. It also keeps reading and retains only the prefix up to the same cap.
 
 ### C6. Identity is stable and PID-reuse-safe
 
@@ -193,7 +193,7 @@ Exactly one process may adopt `workspace` handles for a given directory. Other p
 3. PTY and multiplexer are separated. `pty` is a kernel facility reachable with `script(1)`, and it needs no broker at any scope.
 4. Readiness, expected-prompt interaction, `lost` state, and PID-reuse-safe identity are now first-class. The prior-art table shows each of them is standard practice that the earlier draft omitted.
 5. **A wait and an ownership are now separate questions** (C9, refined R1), and **a workspace has one writer** (C10). Both come from reading `@earendil-works/pi-durable`, which is not a host this project supports. See `05-durability-and-containment.md` for the translation into `pi-coding-agent` terms.
-6. **The vocabulary is now fixed in one place** (`00-terminology.md`), and the documents are numbered `00` to `05`. `carrier` is retired as a term, and `03-carrier-and-runtime-architecture.md` is now `04-runtime-architecture.md`. The rename is recorded in `05-durability-and-containment.md` §8 so that old links are accounted for.
+6. **The vocabulary is now fixed in one place** (`00-terminology.md`), and the documents are numbered `00` to `06`. `carrier` is retired as a term, and `03-carrier-and-runtime-architecture.md` is now `04-runtime-architecture.md`. The rename is recorded in `05-durability-and-containment.md` §8 so that old links are accounted for.
 7. **The `pane` binding and the `shell_attach` tool are removed, and the old R2 claim is retracted.**
    When the process holding it is detached and its stdio is file-bound, a PTY master does outlive Pi. `workspace` + `pty` therefore needs no broker. The multiplexer was only ever buying third-party attach, and attach is out of scope (R3).
 
@@ -202,7 +202,7 @@ Exactly one process may adopt `workspace` handles for a given directory. Other p
 - **`turn` scope is removed**, with its settle-time forced cancellation and its error continuation. A turn boundary never kills a `session` execution. A caller that needs a barrier inside one turn uses `shell_await`.
 - **`shell_start.readiness` is removed.** The marker is `$PI_ASYNC_SHELL_EXEC_DIR/ready`, and patterns are `shell_await` conditions. `immediate` readiness is gone with the declaration.
 - **Every `pipe` execution's output is file-backed through a detached supervisor**. A `session` pipe therefore promotes to `workspace` without a respawn. The earlier rule that a pipe cannot be promoted was a consequence of parent-held pipes, not of the model.
-- **The pipe cap covers every pipe scope** and drains without killing. The earlier claim that a file-backed pipe has no cap described the old `workspace`-only file binding. The supervisor now owns the cap for both scopes. A `pty` recording remains uncapped.
+- **The pipe cap covers every pipe scope** and drains without killing. The earlier claim that a file-backed pipe has no cap described the old `workspace`-only file binding. The supervisor now owns the cap for both scopes. A `pty` recording remains uncapped in 0.2.0. Version 0.2.3 adds a bounded writer with the same cap.
 - **`cancelOnFirstFailure` is removed** with `turn` scope. It cancelled siblings inside a turn group that no longer exists.
 - **The default command shell is `/bin/bash` then `/bin/sh`**, and ambient `$SHELL` is ignored. `PI_ASYNC_SHELL` is the explicit override.
 
@@ -216,3 +216,4 @@ Exactly one process may adopt `workspace` handles for a given directory. Other p
 - **[03. Execution Model and Primitives](03-execution-model-and-primitives.md)** — the seven tool contracts and the selection procedure. It also carries the state machine and completion semantics.
 - **[04. Runtime Architecture](04-runtime-architecture.md)** — how each binding is spawned and how containment is enforced. It also covers how output stays durable, how reload and re-adoption work, and how storage is collected.
 - **[05. What Pi Durable Suggests](05-durability-and-containment.md)** — a translation table from Pi Durable's mechanisms. It maps them to `pi-coding-agent` primitives. It also records the refinement it forced on R1 and where the borrowing stops. It names the process-containment gap that neither first-party project covers.
+- **[06. Skill Boundaries](06-skill-boundaries.md)** — the routing and content ownership contract for the consumer and maintainer skills. It separates observable user guidance from contributor workflow and runtime internals.

@@ -3,10 +3,14 @@ kind: notes
 applies_to: 0.2.3
 tracks:
   - src/core/registry.ts
+  - src/core/records.ts
   - src/core/log-manager.ts
+  - src/core/keys.ts
+  - src/core/utf8.ts
   - src/core/pattern.ts
   - src/core/spawn.ts
   - src/core/paths.ts
+  - src/presentation.ts
   - src/extension.ts
 ---
 
@@ -31,11 +35,15 @@ Layout:
 
 ```text
 src/extension.ts            Pi wiring: 7 tools, lifecycle hooks, /async-shell, footer status
+src/presentation.ts         every string a person or a model reads back, types only below it
 src/core/registry.ts        handles, scopes, waiters, completion, cancel ladder, adoption, GC
 src/core/spawn.ts           the two spawn recipes, the PTY wrapper, environment filtering
 src/core/pipe-supervisor.mjs detached pipe owner: file logs, cap, fd 3 watch, exit record
 src/core/recording-writer.mjs bounded pty recording: drain, append to the cap, drop the rest
+src/core/records.ts         atomic JSON, log deltas, the stdin FIFO, a replay key's file name
 src/core/log-manager.ts     durable output, sparse line index, drain-not-kill cap, read modes
+src/core/utf8.ts            where a byte window may end
+src/core/keys.ts            key names to the bytes a terminal would have sent
 src/core/pattern.ts         the bounded pattern compiler shared by grep and await
 src/core/screen.ts          terminal replay: escape parsing, cursor addressing, viewport
 src/core/containment.ts     tag + identity + group fence, group signalling, absence verification
@@ -77,7 +85,7 @@ Contract-to-evidence map:
 | C4 — cancellation ladder + verification | `registry.test.ts` ("cancel proves the tree is gone, including a setsid escapee", "the fence reaches a child that cleared its env and lost its parent", "graceful cancel uses SIGTERM before the fence") |
 | C5 — drain, never stop reading | `registry.test.ts` ("the session pipe log cap drains instead of killing or blocking the child", "the workspace pipe log cap drains instead of killing or blocking the child"), `pty.test.ts` ("a pty recording stops at the log cap without killing the command") |
 | C6 — `(boot_id, pid, start)` identity | `workspace.test.ts` ("a workspace execution that exited while Pi was away is finalized on adoption", "an unprovable workspace record becomes lost, never completed", "adoption stops at the restart limit and records the reason"), `identity.ts` |
-| C7 — terminal interaction never changes semantics | `pty.test.ts` ("ptyView is the rendered screen, not the raw stream"), `screen.test.ts` (thirteen cases) |
+| C7 — terminal interaction never changes semantics | `pty.test.ts` ("ptyView is the rendered screen, not the raw stream", "a ptyView read is a viewport, and only a byte stream names a next page"), `screen.test.ts` (fourteen cases) |
 | C8 — replay safety is declared | `registry.test.ts` ("a request id makes shell_start replay-safe"), `pty.test.ts` ("a request id makes shell_send replay-safe") |
 | C9 — `shell_await` is the short form | Prompt guidelines; `extension-e2e.test.ts` uses it for a short command |
 | C10 — one writer, read-only observers | `workspace.test.ts` ("one writer owns the workspace; a second process is read-only", "workspace locks recover stale or corrupt holders and never release another pid", "a read-only observer never adopts workspace handles", "a read-only observer can inspect but cannot mutate workspace executions") |
@@ -105,6 +113,8 @@ util-linux 2.42 `script` writes localized start/done headers into its typescript
 
 `shell_read({ stream: "ptyView" })` returns the viewport instead of those bytes. It replays the tail of the recording through the screen model in `src/core/screen.ts`. A carriage return overwrites the line. Cursor addressing redraws in place. An erased line is gone. Output that scrolled past the height is out of view. A prompt that was drawn forty times answers "what is on the screen" with one frame. The raw stream is still available as `combined`.
 
+The replay reports what it did. It covers the tail of the recording, so a read whose window did not start at byte 0 reports `truncated`, and its note names the window. A window that holds no line break aligns on a carriage return instead: a progress bar that only draws with `\r` has no newline to align on, and reading "no newline" as "nothing to replay" reported an empty screen for 300 KiB of output. A window with neither boundary says the viewport could not be reconstructed and points at `combined`, because an unreconstructable screen is not an empty one. The geometry comes from the `pty-size` record the spawn wrote, so the replay uses the size the child got; a record that cannot be read is reported as assumed. `shell_send` reaches the viewport through the same path instead of re-entering the tool-facing read, so the screen it returns cannot disagree with a `shell_read`.
+
 The model covers the sequences a terminal UI emits (CR, LF, BS, TAB, CSI cursor motion and erase). It also covers line and character insertion and deletion, and save/restore. It consumes the rest without printing it. The model omits wide characters and the alternate screen buffer. §4 lists both.
 
 ### 3.3 `script(1)` runs its command through `$SHELL`
@@ -121,7 +131,7 @@ The convention is `$PI_ASYNC_SHELL_EXEC_DIR/ready`, so every spawn exports `PI_A
 
 ### 3.6 The shell policy is fixed, with one explicit override
 
-When the environment sets `PI_ASYNC_SHELL`, `resolveShell` returns that value. Otherwise it returns the first of `/bin/bash` and `/bin/sh` that exists. The runtime ignores ambient `$SHELL`. A login shell is not necessarily a POSIX script interpreter. Inheriting Nushell here would change the command language silently. The active tools' prompt guidelines carry the chosen shell and its origin. The POSIX shell set excludes `fish`. Diagnostics classify an explicit `PI_ASYNC_SHELL=fish` as non-POSIX.
+When the environment sets `PI_ASYNC_SHELL`, `resolveShell` returns that value. Otherwise it returns the first of `/bin/bash` and `/bin/sh` that exists. The runtime ignores ambient `$SHELL`. A login shell is not necessarily a POSIX script interpreter. Inheriting Nushell here would change the command language silently. The `shell_start` description carries the chosen shell and its origin. The POSIX shell set excludes `fish`. Diagnostics classify an explicit `PI_ASYNC_SHELL=fish` as non-POSIX.
 
 Evidence: `maintenance.test.ts` — "the default command shell is bash, not the ambient non-POSIX login shell".
 
@@ -239,6 +249,34 @@ Evidence: `pty.test.ts` — "a pty recording stops at the log cap without killin
 
 ---
 
+### 3.19 A module is split by change reason, not by layer
+
+`node scripts/dsm.mjs` builds the import matrix, partitions it by strongly
+connected component and reports propagation cost. It is a report, not a gate: it
+runs in `pnpm dsm` and not in `pnpm verify`, and `docs/adr/0008-read-coupling-from-a-matrix.md`
+records why no analyser dependency was added for it.
+
+The matrix orders a module before the modules that depend on it, so a
+below-diagonal mark is structure and an above-diagonal mark is a feedback edge.
+The tree has none of the second kind. What it had was two nodes holding 52% of
+the lines, and one of them carried five unrelated change reasons. Four of them
+were already leaves, so they moved out unchanged: `keys.ts` (the key table),
+`utf8.ts` (the window boundary both readers need), `records.ts` (atomic JSON,
+log deltas, the FIFO, a replay key's name) and `presentation.ts` (every string a
+person or a model reads back).
+
+The fourth is worth naming. Formatting sat at the top of the graph, inside the
+file that registers the tools, so a wording change ran through the module every
+other module depends on. It now imports types and nothing else, and
+`readOutcomeExcerpt` takes the one method it needs (`LogReader.read`) instead of
+the registry that happens to have it.
+
+The centre did not move, and the matrix says so: `registry.ts` still has
+fan-out 12 and `extension.ts` still reaches 19 of 22 modules. Both are
+orchestrators. Splitting them further is not a refactor — the state machine, the
+write lock and the adoption path share one invariant — so `docs/rfcs/` is where
+that starts.
+
 ## 4. Known limits of 0.2.0
 
 - **Linux only.** Process identity, containment, the PTY recipe and the pipe supervisor's `/proc/self/stat` read are load-bearing. On a non-Linux platform the runtime fails with an explicit error. When procfs is unreadable, it fails the same way rather than returning an empty process tree.
@@ -246,7 +284,7 @@ Evidence: `pty.test.ts` — "a pty recording stops at the log cap without killin
 - **`pty` has no separate stderr.** A PTY is one stream. `stderr.log` stays empty, and `shell_read` says so.
 - **A `pty`'s `combined.log` is the terminal recording.** The child owns a real PTY. The file therefore carries CRLF and echoed input rather than the child's raw bytes. Reads normalize CRLF. `stripAnsi: false` returns the recording verbatim.
 - **A `pty` recording is capped by a writer, and a capped recording is a prefix.** `PI_ASYNC_SHELL_MAX_LOG_BYTES` (default 100 MiB) bounds `combined.log` on both bindings, and neither binding kills the process at the cap. For a `pty`, a writer between `script(1)` and the file appends up to the cap and then discards, so the retained bytes are the first ones the terminal produced. After `capReached`, `mode: "tail"` and `ptyView` describe the end of that prefix, not the end of the program's output. `util-linux`'s `--output-limit` would bound the file too, by ending the session at the limit; that is why it is not used.
-- **`ptyView` is a viewport, not a scrollback.** The replay window is the tail of the recording (256 KiB minimum). The screen model omits wide characters and the alternate screen buffer. A TUI that paints with wide glyphs can render narrower than the real terminal did.
+- **`ptyView` is a viewport, not a scrollback.** The replay window is the tail of the recording (256 KiB minimum), and a windowed replay reports `truncated` so a reconstructed screen is never read as a complete log. A `ptyView` read names no next page: `nextByte` and `nextLine` are absent, because viewport rows are not file lines. The screen model omits wide characters and the alternate screen buffer. A TUI that paints with wide glyphs can render narrower than the real terminal did.
 - **A `workspace` handle without an exit record and without provable liveness is `lost`.** It is never reported as `completed`.
 - **Containment has a detection floor.** The fence unions three views: environment tag, ppid tree, and owned process groups. A child that runs `env -i` and outlives its parent is still found. One case stays out of reach: a child that also calls `setsid(2)` between scans. It has no tag, no parent edge, and no group of ours.
 - **`shell_await` blocks the tool call.** A tool call cannot be suspended here. A long wait ends the turn and lets the completion message resume it. `waitMs` defaults to 30 s and caps at 50 s.

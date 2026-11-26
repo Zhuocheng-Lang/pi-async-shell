@@ -509,12 +509,11 @@ for (const doc of docs) {
   });
 }
 
-// 5. Evidence back-links in the implementation notes.
-const notes = byRel.get("docs/implementation-notes.md");
-if (notes) {
-  notes.lines.forEach((line, index) => {
+// 5. Evidence back-links in every loaded document.
+for (const doc of docs) {
+  doc.lines.forEach((line, index) => {
     if (!line.startsWith("Evidence:")) return;
-    const where = notes.rel + ":" + (index + 1);
+    const where = doc.rel + ":" + (index + 1);
     /** @type {string | undefined} */
     let file;
     for (const match of line.matchAll(/[\x60]([\w.-]+\.test\.ts)[\x60]|"([^"]+)"/g)) {

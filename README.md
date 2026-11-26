@@ -46,7 +46,7 @@ pi -e npm:pi-async-shell         # try in a single session (trying it never hurt
 pi install npm:pi-async-shell    # install for daily use
 ```
 
-The package ships an `async-shell` skill with server, readiness-marker, test, promotion, and PTY recipes.
+The package ships two skills. `async-shell` covers consumer workflows such as servers, readiness markers, tests, promotion, and PTY sessions. `async-shell-maintainer` covers development and maintenance of this package.
 
 **Evaluating this extension as an agent or human?** Paste this prompt into a `pi -e npm:pi-async-shell` session to verify readiness waiting, PTY interaction, and log search in one turn:
 
@@ -130,7 +130,9 @@ const failures = await shell_read({
 
 | File | Content |
 |---|---|
-| [skills/async-shell/SKILL.md](skills/async-shell/SKILL.md) | Agent recipes: hard rules, readiness markers, PTY sessions, ownership, wait budgets. |
+| [skills/async-shell/SKILL.md](skills/async-shell/SKILL.md) | Consumer recipes: hard rules, readiness markers, PTY sessions, ownership, wait budgets. |
+| [skills/async-shell-maintainer/SKILL.md](skills/async-shell-maintainer/SKILL.md) | Contributor routing, verification commands, and internal implementation map. |
+| [docs/design/06-skill-boundaries.md](docs/design/06-skill-boundaries.md) | Routing and ownership boundary between consumer and maintainer skills. |
 | [bench/REPORT.md](bench/REPORT.md) | Reproducible benchmark against Pi's `bash` tool and eight npm background/task extensions. |
 | [docs/implementation-notes.md](docs/implementation-notes.md) | Runtime architecture, on-disk storage, log cap, garbage collection, known limits. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, `pnpm verify`, running benchmarks, release steps. |

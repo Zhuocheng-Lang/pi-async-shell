@@ -160,6 +160,8 @@ In a pattern wait, `stream: "ptyView"` reads the terminal recording's bytes. For
 
 Bounded retrieval. The hard cap per call is 2000 lines or 50 KiB, whichever comes first. `mode: "all"` is a bounded alias for a head read. It arrived as an agent assumption in real sessions, so it answers with one full read budget and a note that names `nextLine` and `nextByte`; page past it with `mode: "offset"`.
 
+A `ptyView` read is the exception. It returns viewport rows rather than file lines, so it names no next page: `nextByte` and `nextLine` are absent, and the note says the viewport is not pageable. The replay covers the tail of the recording, so a windowed replay reports `truncated`, and its note names the window. When the window holds no line break, the replay aligns on a carriage return instead. When it holds neither, the note says the viewport could not be reconstructed and points at `combined`.
+
 ```ts
 interface ShellReadParams {
   id: string;

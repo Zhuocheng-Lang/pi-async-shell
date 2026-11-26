@@ -44,6 +44,7 @@ A decision is never deleted. Mark it superseded and record what replaced it.
 | [0005](0005-pty-wrapper-foreground-signal-disposition.md) | Run `script(1)` in the foreground of the PTY wrapper | Accepted |
 | [0006](0006-retire-session-promotion.md) | Retire the `to: "session"` promotion direction | Accepted |
 | [0007](0007-bound-the-pty-recording-without-touching-the-process.md) | Bound a `pty` recording with a writer, not with `script(1)` | Accepted |
+| [0008](0008-read-coupling-from-a-matrix.md) | Read coupling from a matrix, and split a module by change reason | Accepted |
 
 ADR 0001 to 0004 are backfilled. They record decisions the design series already
 carries, written down as decisions so that the design no longer has to explain

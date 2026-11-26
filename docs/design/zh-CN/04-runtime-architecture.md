@@ -107,7 +107,7 @@ exec "$shell" -c "$command"
 
 - **录制写进文件。** `script` 写自己的 stdout。数据路径因此不携带 Pi 的描述符，Pi 死亡也不会中断任何东西。
 - **stdin 是以读写方式保持打开的 FIFO。** 读写句柄让子进程的 stdin 不出现 EOF。没有写者时也如此。后来的进程还能以写方式打开同一个 FIFO。`shell_send` 以 `O_WRONLY|O_NONBLOCK` 打开它，所以没有读者时写入快速失败，而不是阻塞调用者。
-- **尺寸显式设置。** stdin 是 FIFO，所以内核不会给从端任何窗口尺寸。`stty size` 会回答 `0 0`。运行时把尺寸记录在 `pty-size`，启动器应用它，使子进程与重放一致。stdout 是 TTY 时，尺寸来自 Pi 的终端。否则尺寸来自 `COLUMNS`／`LINES`，钳制在 20-500 列与 4-200 行。默认是 80x24。
+- **尺寸显式设置。** stdin 是 FIFO，所以内核不会给从端任何窗口尺寸。`stty size` 会回答 `0 0`。运行时把尺寸记录在 `pty-size`，启动器应用它，使子进程与重放一致。stdout 是 TTY 时，尺寸来自 Pi 的终端。否则尺寸来自 `COLUMNS`／`LINES`，钳制在 20-500 列与 4-200 行。默认是 80x24。这个文件只由一个模块拥有：尺寸类型、它的边界和写入者都在启动器旁边，重放读的是记录而不是自设一个宽度。读不出的记录会报告为「已假定默认值」，绝不会当作程序实际看到的尺寸呈现。
 - **`script` 固定到 POSIX shell，且其作业保留默认信号处置。** `script` 通过 `$SHELL -c` 运行命令。`SHELL=/bin/sh` 于是把非 POSIX 用户 shell 挡在命令解析器、退出码与日志之外。把作业放到后台会让 shell 在其中忽略 SIGINT 与 SIGQUIT。这会静默禁用经 PTY 的 ^C，所以运行时在 `exec` 前复位处置。
 
 PTY 把 stdout 与 stderr 合并进一份录制。`combined.log` 就是那份终端录制（CRLF、回显输入）。`stdout.log` 与 `ptyView.log` 是指向它的符号链接。`shell_read` 默认规范化 CRLF。`ptyView` 把该录制重放成它产生的屏幕。这种重放是字节流的视图，不是替代品。

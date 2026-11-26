@@ -6,30 +6,14 @@ import { StringDecoder } from "node:string_decoder";
 import { stripAnsi } from "./ansi.ts";
 import { compilePattern } from "./pattern.ts";
 import { renderScreen } from "./screen.ts";
-import type { ShellReadParams, ShellReadRange } from "./types.ts";
+import { clampPtySize, type PtySize, type ShellReadParams, type ShellReadRange } from "./types.ts";
+import { completeUtf8Length } from "./utf8.ts";
 
 export const DEFAULT_MAX_LOG_BYTES = 100 * 1024 * 1024;
 export const MAX_READ_LINES = 2000;
 export const MAX_READ_BYTES = 50 * 1024;
 export const DEFAULT_READ_LINES = 200;
 export const DEFAULT_READ_BYTES = 16 * 1024;
-
-/**
- * The largest prefix length that ends on a UTF-8 character boundary.
- *
- * A read window ends wherever the byte count says, which can be inside a
- * multi-byte character. Decoding that tail yields U+FFFD, so the partial bytes
- * are excluded and the caller picks them up in the next window.
- */
-export function completeUtf8Length(buffer: Buffer): number {
-  for (let back = 1; back <= Math.min(4, buffer.length); back += 1) {
-    const byte = buffer[buffer.length - back] as number;
-    if ((byte & 0xc0) === 0x80) continue; // a continuation byte: keep looking back
-    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
-    return needed > back ? buffer.length - back : buffer.length;
-  }
-  return buffer.length;
-}
 
 interface IndexEntry {
   size: number;
@@ -294,8 +278,12 @@ export async function readLog(path: string, params: ShellReadParams): Promise<Re
 }
 
 export interface ScreenReadOptions {
-  cols?: number;
-  rows?: number;
+  /**
+   * The geometry the child ran at, as the spawn recorded it. Absent means the
+   * record was unreadable, and the note says the default was assumed rather than
+   * presenting it as the size the program saw.
+   */
+  size?: PtySize;
 }
 
 /**
@@ -317,27 +305,52 @@ export async function readScreenLog(
   const maxBytes = clampBytes(params.maxBytes);
   const mode = params.mode ?? "tail";
   if (totalBytes === 0) {
-    return { text: "", truncated: false, totalLines: 0, totalBytes, range: { startByte: 0, endByte: 0, nextByte: 0 } };
+    return { text: "", truncated: false, totalLines: 0, totalBytes, range: { startByte: 0, endByte: 0 } };
   }
+  const geometry = clampPtySize(screen.size ?? {});
   const window = Math.min(totalBytes, Math.max(maxBytes * 8, 256 * 1024));
   const start = totalBytes - window;
   const buffer = await readRange(path, start, window);
   let raw = buffer.subarray(0, completeUtf8Length(buffer)).toString("utf8");
+  let aligned = true;
   if (start > 0) {
-    // Never start the replay inside an escape sequence.
-    const newline = raw.indexOf("\n");
-    raw = newline >= 0 ? raw.slice(newline + 1) : "";
+    // A replay may not begin inside an escape sequence or in the middle of a
+    // frame. A carriage return is a boundary too: a progress bar that only ever
+    // draws with \r has no newline to align on, and reading "no newline" as
+    // "nothing to replay" turned a 300 KiB recording into an empty screen.
+    const boundary = raw.search(/[\n\r]/);
+    aligned = boundary >= 0;
+    raw = aligned ? raw.slice(boundary + 1) : "";
   }
-  const snapshot = renderScreen(raw, { cols: screen.cols, rows: screen.rows });
+  const snapshot = renderScreen(raw, geometry);
   const lines = snapshot.lines;
-  const note = `rendered ${snapshot.cols}x${snapshot.rows} terminal screen from ${totalBytes} recorded bytes`;
+  // Everything a caller needs to judge the viewport, said once.
+  const notes = [`rendered ${snapshot.cols}x${snapshot.rows} terminal screen from ${totalBytes} recorded bytes`];
+  if (!screen.size) {
+    notes.push(`the recorded terminal size was unreadable, so the default ${snapshot.cols}x${snapshot.rows} was assumed`);
+  }
+  if (start > 0) {
+    notes.push(
+      aligned
+        ? `the replay covered the last ${window} of ${totalBytes} bytes, so frames drawn before that window are not in this viewport`
+        : "the replay window began inside a line with no line break or carriage return, so the viewport could not be reconstructed; read stream \"combined\" for the bytes",
+    );
+  }
+  if (snapshot.addressed) {
+    notes.push("the program addressed the cursor, so this is a replayed screen rather than a tail of its output");
+  }
+  const note = notes.join("; ");
+  // A window that could not be aligned lost frames, which is exactly what a
+  // caller must not read as "the screen was empty".
+  const windowed = start > 0 || !aligned;
   const range = (startLine: number, endLine: number): ShellReadRange => ({
+    // A screen read is not pageable. These are viewport rows, not file lines,
+    // and there is no byte a caller could continue from: naming an offset that
+    // is already EOF is what made "page with nextByte" a no-op.
     startLine,
     endLine,
     startByte: start,
     endByte: totalBytes,
-    nextLine: endLine + 1,
-    nextByte: totalBytes,
   });
 
   if (mode === "grep") {
@@ -355,14 +368,21 @@ export async function readScreenLog(
       }
     });
     if (matches === 0) {
-      return { text: "", truncated: false, totalLines: lines.length, totalBytes, range: range(1, 0), note: `${note}; no lines matched` };
+      return {
+        text: "",
+        truncated: windowed,
+        totalLines: lines.length,
+        totalBytes,
+        range: range(1, 0),
+        note: `${note}; no lines matched`,
+      };
     }
     const ordered = [...wanted].sort((a, b) => a - b);
     const selected = ordered.map((index) => `${index + 1}: ${lines[index]}`);
     const cut = cutToBytes(selected.join("\n"), maxBytes, "start");
     return {
       text: cut.text,
-      truncated: cut.truncated,
+      truncated: cut.truncated || windowed,
       totalLines: lines.length,
       totalBytes,
       range: range((ordered[0] ?? 0) + 1, (ordered[ordered.length - 1] ?? 0) + 1),
@@ -385,7 +405,7 @@ export async function readScreenLog(
   const cut = cutToBytes(selected.join("\n"), maxBytes, mode === "head" ? "start" : "end");
   return {
     text: cut.text,
-    truncated: cut.truncated || selected.length < lines.length,
+    truncated: cut.truncated || selected.length < lines.length || windowed,
     totalLines: lines.length,
     totalBytes,
     range: range(firstLine, firstLine + selected.length - 1),

@@ -160,6 +160,8 @@ interface ShellAwaitResult {
 
 有界检索。每次调用的硬上限是 2000 行或 50 KiB，先到者为准。`mode: "all"` 是一次 head 读取的有界别名。它来自真实会话中 agent 的假设，因此用满一次读取预算作答，并附注给出 `nextLine` 与 `nextByte`；超出部分用 `mode: "offset"` 翻页。
 
+`ptyView` 读取是例外。它返回的是视口行，不是文件行，因此不给出下一页：`nextByte` 与 `nextLine` 缺席，附注说明视口不可翻页。回放只覆盖录制的尾部，所以窗口化回放会报告 `truncated`，附注指出窗口范围。窗口内没有换行时，回放改以回车对齐。两者都没有时，附注说明视口无法重建，并指向 `combined`。
+
 ```ts
 interface ShellReadParams {
   id: string;

@@ -1,32 +1,34 @@
 ---
 name: async-shell
-description: Run and supervise durable asynchronous shell work in pi-async-shell. Use for dev servers, slow builds or tests, parallel commands, readiness waits, workspace promotion, and interactive PTY programs.
+description: Run and supervise durable asynchronous shell work in pi-async-shell. Use for dev servers, slow builds, tests, parallel commands, readiness waits, workspace promotion, and interactive PTY programs.
 ---
 
 # Async shell workflows
 
-Use shell_start for work that should return a handle immediately. A command that settles within inlineSettleMs (default 1000) returns its status and output tail in that same call, so a fast command needs no separate await and no completion message follows. Keep Pi's bash tool for commands that need neither a log nor a durable handle.
+Use shell_start for durable handles and logs. Keep Pi's bash tool for commands that finish within two seconds and need no log.
 
-Commands use /bin/bash -c by default, falling back to /bin/sh. Ambient $SHELL is ignored. PI_ASYNC_SHELL is an explicit override.
+When the command outlives inlineSettleMs, shell_start returns a handle. When the command settles within inlineSettleMs, the start result includes its status and output tail. The start result is the only delivery for an inline settle.
+
+Commands use /bin/bash -c by default. The fallback is /bin/sh. The runtime ignores ambient $SHELL. Set PI_ASYNC_SHELL to override the interpreter.
 
 ## Hard rules
 
-- Start slow, parallel, or log-worthy work with shell_start. Keep Pi's bash tool only for commands that finish in about a second and need no log.
-- Do not pipe command output to tail, head, grep, or wc. A pipe truncates the durable log before shell_read can search it, and on a shell without pipefail it also replaces the source exit code. Run the command whole; use shell_read with mode tail, grep, offset, or all.
-- Pass cwd to shell_start instead of prefixing the command with cd, so the handle and the process agree on the working directory.
-- Put at most one long blocking await in a codemode script. Leave room in the 60-second script budget; after a full-length await, end the turn and let the completion message wake you instead of awaiting again.
-- Decide whether the wait is needed before you start one. When no later action in the task depends on an external state change, such as a registry index or a CDN cache refreshing after a local verification or a publish already succeeded, report what is verified and stop: do not poll with shell_await and do not start a watcher for it.
-- When a later action does depend on an external state, such as a CI run, start one command that exits when the condition resolves and give it timeoutSeconds. Await it once; if it does not settle, end the turn and let the completion message wake you. Nothing here watches a bare condition, so a second blocking await only spends the budget.
-- Wait for readiness with until: pattern or a ready marker; do not poll shell_status or sleep in a loop.
-- Pipelines on bash-like shells run with set -o pipefail, so any failing stage fails the command. On the /bin/sh fallback, only the last stage sets the exit code; the handle and completion message name the exitSource.
-- Completion messages and await results include the exit code plus a bounded output excerpt. Read more only when the excerpt is not enough.
-- waitMs above 50000 and inlineSettleMs above 10000 are clamped with a note, not rejected. Do not rely on the larger value taking effect.
+- Use shell_start for slow commands, parallel commands, durable logs, or work that outlives the turn. Keep Pi's bash tool for commands that finish within two seconds and need no log.
+- Preserve complete command output in the durable log. Use shell_read instead of tail, head, grep, or wc output pipes. Output pipes can truncate the log or replace the source exit code.
+- Pass cwd to shell_start instead of prefixing the command with cd.
+- Finish independent work before waiting. Use at most one long blocking wait in each codemode script. Reserve time within the 60-second script budget. When a full-length wait expires, end the turn. Let completion delivery resume the work.
+- Before starting a wait, identify the later action that uses its outcome. When no later action needs an external state change, report the verified result and stop. Skip polling and watchers in this case.
+- When a later action needs an external state change, start one command that exits on that change. Set timeoutSeconds. Await that command once. If the wait expires, end the turn and let completion delivery resume the work.
+- Wait for readiness with until: pattern or a ready marker. Use shell_await instead of status polling or sleep loops.
+- Bash-like shells apply set -o pipefail to pipelines. Any failing stage then fails the command. The /bin/sh fallback takes the exit code from the last stage. The handle and completion message name exitSource.
+- Completion messages and await results include the exit code and a bounded output excerpt. When the excerpt lacks needed evidence, read more with shell_read.
+- The tool clamps waitMs above 50000 and inlineSettleMs above 10000. The result note reports the clamp. Use the documented maxima for planning.
 
 ## Start a server and run dependent tests
 
 1. Start the server with shell_start. Use the default session scope and pipe binding.
-2. Wait for its actual readiness signal with shell_await. Do not sleep or poll shell_status.
-3. Start tests with shell_start, then wait for exit.
+2. Wait for the server's readiness signal with shell_await. Use output patterns or a ready marker instead of polling.
+3. Start tests with shell_start. Wait for exit with shell_await.
 4. Read only the useful log slice with shell_read.
 
 Tool-call sequence:
@@ -53,11 +55,11 @@ shell_read({
 })
 ```
 
-Adjust the regular expression to the server. A wait timeout never kills the server or tests.
+Adjust the regular expression to the server's readiness output. A wait timeout leaves the server and tests running.
 
 ## Prefer an explicit ready marker
 
-A command can create $PI_ASYNC_SHELL_EXEC_DIR/ready after its own health check succeeds. This is more reliable than scraping output.
+When the program has a health check, create $PI_ASYNC_SHELL_EXEC_DIR/ready after that check succeeds. Prefer this marker to output scraping.
 
 ```sh
 pnpm run dev &
@@ -73,11 +75,14 @@ Then call:
 shell_await({ ids: "sh_server_id", until: { kind: "ready" }, waitMs: 15000 })
 ```
 
-Do not pass readiness to shell_start. Output patterns and the ready marker belong to shell_await.
+Pass readiness conditions only to shell_await. shell_start has no readiness parameter.
 
 ## Drive an interactive program
 
-Start with binding pty. Wait for a prompt pattern, send text or key chords, then read the rendered screen.
+1. Start the program with binding: "pty".
+2. Wait for a prompt pattern.
+3. Send text or key chords.
+4. Read the rendered screen with ptyView.
 
 ```json
 shell_start({
@@ -93,32 +98,46 @@ shell_send({ id: "sh_repl_id", text: "print(2 + 2)", keys: ["Enter"] })
 shell_read({ id: "sh_repl_id", stream: "ptyView" })
 ```
 
-shell_send refuses pipe bindings. Output patterns can match a prompt even when it has no trailing newline.
+shell_send accepts only pty bindings. Output patterns can match prompts without trailing newlines.
 
 ## Choose ownership
 
-- session is the default. Work survives the turn in a resident session and survives /reload. In single-shot print or JSON mode, pending waking work holds settlement until completion or readiness; final session shutdown reaps every remaining session execution.
-- workspace survives Pi process restarts and single-shot exits, and can be adopted by a later session.
-- shell_promote({ id, to: "workspace" }) releases either a pipe or pty session without restarting it.
+- session is the default. Work survives turns in a resident session and across /reload. In print or JSON mode, pending waking work holds settlement until completion or readiness. Final session shutdown reaps every remaining session execution.
+- workspace survives Pi process restarts and single-shot exits. A later session can adopt its executions.
+- shell_promote({ id, to: "workspace" }) releases a pipe or pty session without restarting it.
 
-Pending waking work is live and unready, with notifyOnCompletion and triggerOnCompletion both enabled. Ready companions and executions with either option false do not hold a single-shot run open. Give a companion service a ready marker when its readiness, rather than its eventual exit, is the milestone the agent needs.
+Pending waking work is live and unready. Both notifyOnCompletion and triggerOnCompletion are true. Ready companions and executions with either option false release a single-shot run.
 
-Do not use scope turn; it no longer exists.
+When readiness is the required milestone, give a companion service a ready marker.
+
+Use only session or workspace for scope. The removed turn scope is invalid.
 
 ## Wait within the caller budget
 
-shell_await waitMs defaults to 30000 and is clamped to 50000; an over-limit value is reported in the result note. A full-length wait that times out tells you to end the turn: completion delivery starts the next decision, so repeated blocking waits waste the codemode script budget. In print or JSON mode, agent_before_settle waits for pending waking session work instead of letting immediate shutdown reap it. shell_read mode all is a bounded head read (2000 lines / 50 KiB) whose note explains how to page with offset.
+shell_await waitMs defaults to 30000. The tool clamps values above 50000. The result note reports the clamp.
 
-Structured callers read the result object, not the text. In codemode, check settled, timedOutWaiting, outcomes, stillRunning and note together: an expired wait returns an empty outcomes list and carries its instruction in note, so a script that only inspected outcomes cannot tell an expiry from a failure.
+When a full-length wait expires, end the turn. Completion delivery starts the next decision. Repeated blocking waits consume the codemode script budget.
 
-Cancellation stops processes but does not roll back their effects. Use shell_cancel only when termination is intended.
+shell_read returns at most 2000 lines or 50 KiB per call. The first reached limit applies.
+
+mode: "all" performs a bounded head read within that budget. When the result reaches a limit, continue with mode: "offset". Use lineOffset: range.nextLine or byteOffset: range.nextByte.
+
+A ptyView read is a viewport, not a page. It returns the current screen, names no next page, and reports truncated when the replay covered only part of the recording. Read stream "combined" when you need the bytes.
+
+Structured callers read the result object rather than display text. In codemode, check settled, timedOutWaiting, outcomes, stillRunning, and note together.
+
+An expired wait returns an empty outcomes list. Its note carries the next action. Checking only outcomes cannot distinguish expiry from failure.
+
+Use shell_cancel only to stop work. Cancellation leaves filesystem and external side effects in place.
 
 ## Wait for an external state, or do not wait
 
-Every wake-up here comes from an execution that exists and then exits, so a bare condition has nothing to settle. A wait is only useful when it names a process whose exit means the condition changed.
+Every wake-up comes from an execution that exits. A bare external condition has no completion event.
 
-- Nothing later in the task needs the new state: report the result you already verified and stop. Polling someone else's schedule inside the turn returns nothing sooner and spends the turn.
-- Something later does need it: start one watcher that exits on the change, for example a loop that exits when the registry serves the new version, and set timeoutSeconds. Await it once. If it does not settle, end the turn and let its completion message resume you.
+Wait only on a process whose exit signals the required state change.
+
+- When no later action needs the new state, report the verified result and stop. Polling cannot accelerate another system's schedule.
+- When a later action needs the new state, start one watcher that exits on the change. Set timeoutSeconds. Await the watcher once. If it expires, end the turn and let its completion resume the work.
 
 ```json
 shell_start({
@@ -131,10 +150,29 @@ shell_await({ ids: "sh_wait_id", waitMs: 30000 })
 
 ## Completion delivery
 
-A command that settles while nothing awaits it notifies you. If you are still working, the notification arrives before your next LLM call, so you do not have to end the turn to learn that a command finished. shell_start delivery: "settle" holds the notification until the run settles instead. A settle that an await reports is delivered by that result alone, so the same run is never announced twice. The single-shot lifecycle wait is only an observer: it does not consume the completion or mark it consumedByAwait.
+When no wait consumes a settle, the completion channel reports it. An await result reports its settles. The completion channel skips those records.
+
+The matrix covers only unconsumed settles. While the agent runs, delivery selects the arrival path. When the agent is idle, both values use the follow-up path.
+
+| notifyOnCompletion | triggerOnCompletion | While running (steer / settle) | When idle | Live, unready session work in print/JSON |
+|---|---|---|---|---|
+| false | either | The runtime queues no completion. | The runtime sends no message and starts no turn. | The host settles without waiting for this execution. |
+| true | false | steer delivers before the next LLM call. settle injects at the settle boundary. | The runtime reports the completion without starting a turn. | The host settles without waiting for this execution. |
+| true | true | steer delivers before the next LLM call. settle injects at the settle boundary. | The runtime reports the completion and starts a turn. | The host waits for exit or readiness. |
+
+Session executions default to notifyOnCompletion: true and triggerOnCompletion: true. Workspace executions default to notifyOnCompletion: false. Workspace records leave idle turns unchanged.
 
 ## Environment and logs
 
-Ambient API keys, common access tokens, and credential variables are filtered by default. shell_start.env can explicitly restore a variable, but tool arguments can enter the session transcript. Do not place real credentials there without user authorization.
+The runtime filters ambient API keys, access tokens, and credential variables by default. Explicit shell_start.env values restore selected variables. Tool arguments can enter the session transcript. Place real credentials in arguments only with user authorization.
 
-Every log stops growing at PI_ASYNC_SHELL_MAX_LOG_BYTES (100 MiB by default) while the command keeps draining and keeps running: a pipe log through its supervisor, a PTY recording through the bounded writer between script(1) and the file. A capped log is the beginning of the output, not its end, so a tail read after bytes.capReached describes the end of that prefix. Use timeoutSeconds for runaway duration and let registry GC remove expired terminal history.
+PI_ASYNC_SHELL_MAX_LOG_BYTES bounds every log. The default is 100 MiB. The runtime continues reading output after the cap. The command keeps running.
+
+A capped log retains the beginning of the output. After bytes.capReached, a tail read describes the end of that prefix. Later output remains unrecorded.
+
+Use timeoutSeconds to bound runaway duration.
+
+## Failure triage
+
+- status: "lost" marks unprovable workspace liveness during adoption. It establishes neither success nor failure. Inspect the handle's error and durable logs. Treat the original outcome as unknown. Before rerunning, assess duplicate side effects.
+- Workspace adoption requires the writer lock. workspaceOwner: false identifies a read-only observer. shell_status and shell_read remain available. Starting or promoting into workspace scope requires the owner. Mutating live workspace executions also requires the owner. When another live Pi process owns the lock, use that owner's session or wait for lock release. Leave lock files intact. Use event-driven coordination instead of retry loops.

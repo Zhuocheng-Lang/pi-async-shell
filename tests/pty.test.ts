@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { keyToBytes } from "../src/core/registry.ts";
+import { keyToBytes } from "../src/core/keys.ts";
 import { makeRegistry, tempCwd, waitFor } from "./helpers.ts";
 
 async function waitForStdin(dir: string): Promise<void> {
@@ -266,14 +266,47 @@ test("a pty recording stops at the log cap without killing the command", async (
 });
 
 test("the pty is sized at spawn time instead of degrading to 0 0", async () => {
-  const registry = makeRegistry(tempCwd("pas-pty-"));
+  // 200x50 on purpose: the default is 80x24, so a replay that fell back to it
+  // would render at the wrong width and the note would say so.
+  const registry = makeRegistry(tempCwd("pas-pty-"), { env: { COLUMNS: "200", LINES: "50" } });
   try {
     const handle = await registry.start({ command: "stty size", binding: "pty", scope: "session" });
     const result = await registry.awaitHandles({ ids: handle.id, waitMs: 20000 });
     assert.equal(result.outcomes[0]?.status, "completed");
     const view = await registry.read({ id: handle.id, stream: "ptyView" });
-    assert.match(view.text, /^\d+ \d+$/m, "the child sees a real terminal size");
+    const childSize = /^(\d+) (\d+)$/m.exec(view.text);
+    assert.ok(childSize, "the child sees a real terminal size");
     assert.doesNotMatch(view.text, /^0 0$/m, "a FIFO stdin gives the slave no size of its own");
+    // stty prints "rows cols" and the note prints "colsxrows". The replay has to
+    // use the size the child actually got, not a default of its own.
+    assert.match(
+      view.note ?? "",
+      new RegExp(`rendered ${childSize[2]}x${childSize[1]} terminal screen`),
+      "the replay uses the geometry the child ran at",
+    );
+    assert.doesNotMatch(view.note ?? "", /was assumed/);
+  } finally {
+    await registry.shutdown("quit");
+  }
+});
+
+test("a ptyView read is a viewport, and only a byte stream names a next page", async () => {
+  const registry = makeRegistry(tempCwd("pas-pty-"));
+  try {
+    const handle = await registry.start({
+      command: "printf 'alpha\\nbeta\\n'; sleep 0.2",
+      binding: "pty",
+      scope: "session",
+    });
+    await registry.awaitHandles({ ids: handle.id, waitMs: 20000 });
+    const view = await registry.read({ id: handle.id, stream: "ptyView", mode: "all" });
+    assert.match(view.text, /alpha/);
+    assert.doesNotMatch(view.note ?? "", /nextByte/, "a viewport has no byte range to page");
+    assert.equal(view.range.nextByte, undefined);
+    assert.equal(view.range.nextLine, undefined);
+
+    const bytes = await registry.read({ id: handle.id, stream: "combined", mode: "all" });
+    assert.match(bytes.note ?? "", /nextByte/, "a byte stream still names the page after it");
   } finally {
     await registry.shutdown("quit");
   }

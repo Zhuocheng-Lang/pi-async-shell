@@ -3,27 +3,16 @@
 
 import type { ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
-  closeSync,
-  constants,
   existsSync,
-  fstatSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
-  readFileSync,
-  readSync,
   readdirSync,
-  renameSync,
   statSync,
   symlinkSync,
   watch,
-  writeFileSync,
-  writeSync,
   type FSWatcher,
 } from "node:fs";
-import { open, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { fence, signalGroup, verifyGone } from "./containment.ts";
 import {
@@ -36,7 +25,15 @@ import {
   type ProcessGroupRef,
 } from "./identity.ts";
 import {
-  completeUtf8Length,
+  createExecutionLifecycle,
+  executionLifecycleStatus,
+  executionStatusForExit,
+  isExecutionSettled,
+  transitionExecutionLifecycle,
+  type ExecutionLifecycleEvent,
+  type ExecutionLifecycleState,
+} from "./execution-lifecycle.ts";
+import {
   DEFAULT_MAX_LOG_BYTES,
   MAX_READ_BYTES,
   MAX_READ_LINES,
@@ -55,14 +52,26 @@ import {
   registryPaths,
   type RegistryPaths,
 } from "./paths.ts";
+import { keyToBytes } from "./keys.ts";
 import { readinessMarkerExists } from "./readiness.ts";
+import {
+  readDeltaSync,
+  readJson,
+  requestFileName,
+  sizeOf,
+  writeFifo,
+  writeJsonAtomic,
+  writeJsonAtomicSync,
+} from "./records.ts";
 import { applyPipelineStatus, resolveShell, type ShellPolicy } from "./shell-policy.ts";
 import {
   fifoPath,
   ptyLauncher,
+  readPtySize,
   resolvePtySize,
   spawnPipe,
   spawnPty,
+  writePtySize,
   writeWrapper,
 } from "./spawn.ts";
 import {
@@ -82,8 +91,8 @@ import {
   type ShellSendParams,
   type ShellSendResult,
   type ShellStartParams,
-  type ShellStatus,
   type ShellStatusResult,
+  type TerminalShellStatus,
 } from "./types.ts";
 
 export const DEFAULT_WAIT_MS = 30_000;
@@ -115,8 +124,7 @@ interface Execution {
   child?: ChildProcess;
   identity?: ProcIdentity;
   identities: ProcIdentity[];
-  cancelRequested: boolean;
-  finalized: boolean;
+  lifecycle: ExecutionLifecycleState;
   timeoutTimer?: NodeJS.Timeout;
   exitWatcher?: FSWatcher;
   exitPoll?: NodeJS.Timeout;
@@ -136,115 +144,6 @@ function nextId(): string {
 
 function normalizeIds(ids: string | string[]): string[] {
   return Array.isArray(ids) ? ids : [ids];
-}
-
-function writeJsonAtomicSync(path: string, value: unknown): void {
-  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-  const fd = openSync(tmp, "w");
-  try {
-    writeSync(fd, JSON.stringify(value, null, 2));
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(tmp, path);
-}
-
-function readJson<T>(path: string): T | undefined {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-function sizeOf(path: string): number {
-  try {
-    return statSync(path).size;
-  } catch {
-    return 0;
-  }
-}
-
-function readDeltaSync(path: string, offset: number): { text: string; nextOffset: number } {
-  try {
-    const fd = openSync(path, "r");
-    try {
-      const size = fstatSync(fd).size;
-      if (size <= offset) return { text: "", nextOffset: offset };
-      const length = Math.min(size - offset, 256 * 1024);
-      const buffer = Buffer.allocUnsafe(length);
-      const read = readSync(fd, buffer, 0, length, offset);
-      // The next call resumes where this one stopped, so a character split by the
-      // window would be lost for good. Stop on a character boundary instead, and
-      // let the following poll pick up the rest.
-      const usable = completeUtf8Length(buffer.subarray(0, read));
-      return { text: buffer.subarray(0, usable).toString("utf8"), nextOffset: offset + usable };
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return { text: "", nextOffset: offset };
-  }
-}
-
-const KEY_BYTES: Record<string, string> = {
-  enter: "\r",
-  return: "\r",
-  tab: "\t",
-  escape: "\u001b",
-  esc: "\u001b",
-  backspace: "\u007f",
-  space: " ",
-  delete: "\u001b[3~",
-  insert: "\u001b[2~",
-  up: "\u001b[A",
-  down: "\u001b[B",
-  right: "\u001b[C",
-  left: "\u001b[D",
-  home: "\u001b[H",
-  end: "\u001b[F",
-  pageup: "\u001b[5~",
-  pagedown: "\u001b[6~",
-  f1: "\u001bOP",
-  f2: "\u001bOQ",
-  f3: "\u001bOR",
-  f4: "\u001bOS",
-  f5: "\u001b[15~",
-  f6: "\u001b[17~",
-  f7: "\u001b[18~",
-  f8: "\u001b[19~",
-  f9: "\u001b[20~",
-  f10: "\u001b[21~",
-  f11: "\u001b[23~",
-  f12: "\u001b[24~",
-};
-
-/** `Ctrl+C`, `ctrl c`, `ctrl-c` and `CTRL+C` are one key, not four. */
-function normalizeKeyName(key: string): string {
-  return key.trim().toLowerCase().replace(/[\s+_-]+/g, "");
-}
-
-/**
- * Turn a key name into the bytes a terminal would have sent.
- *
- * A name nobody recognizes throws. Writing the name as literal text instead
- * reports `wrote: true`, so a typo in a key chord looks like a delivered
- * keystroke that the program simply ignored, and the caller debugs the program.
- */
-export function keyToBytes(key: string): string {
-  if (key.length === 1) return key; // a single character is itself
-  const name = normalizeKeyName(key);
-  const named = KEY_BYTES[name];
-  if (named !== undefined) return named;
-  const control = /^ctrl([a-z])$/.exec(name);
-  if (control) return String.fromCharCode((control[1] as string).charCodeAt(0) - 96);
-  throw new Error(
-    `shell_send does not know the key "${key}". Send literal input as text, or use one of: ${[
-      ...Object.keys(KEY_BYTES),
-      "Ctrl+<letter>",
-    ].join(", ")}.`,
-  );
 }
 
 export class ShellRegistry {
@@ -316,6 +215,14 @@ export class ShellRegistry {
   private subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** The only write path for an owned handle's public and durable status. */
+  private transitionLifecycle(exec: Execution, event: ExecutionLifecycleEvent): void {
+    exec.lifecycle = transitionExecutionLifecycle(exec.lifecycle, event);
+    const status = executionLifecycleStatus(exec.lifecycle);
+    exec.handle.status = status;
+    exec.meta.status = status;
   }
 
   private assertWorkspaceWriter(action: string): void {
@@ -397,8 +304,7 @@ export class ShellRegistry {
       tag: id,
       durable,
       identities: [],
-      cancelRequested: false,
-      finalized: false,
+      lifecycle: createExecutionLifecycle(),
     };
     this.executions.set(id, exec);
 
@@ -411,8 +317,7 @@ export class ShellRegistry {
       throw error;
     }
 
-    exec.handle.status = "running";
-    exec.meta.status = "running";
+    this.transitionLifecycle(exec, { type: "launched" });
     exec.meta.pid = exec.handle.pid;
     exec.meta.pgid = exec.handle.pgid;
     exec.meta.identity = exec.identity;
@@ -421,7 +326,7 @@ export class ShellRegistry {
     // admission path; a crash here leaves a record the liveness check classifies.
     await this.persist(exec, { sync: false });
 
-    if (params.timeoutSeconds && params.timeoutSeconds > 0) {
+    if (!isExecutionSettled(exec.lifecycle) && params.timeoutSeconds && params.timeoutSeconds > 0) {
       exec.timeoutTimer = setTimeout(() => {
         void this.enforceTimeout(exec);
       }, params.timeoutSeconds * 1000);
@@ -473,8 +378,10 @@ export class ShellRegistry {
     const dir = exec.handle.log.dir;
     const size = resolvePtySize(this.env);
     // The size is decided here because nothing inside the PTY can discover it:
-    // stdin is a FIFO, so the kernel gives the slave no size at all.
-    writeFileSync(join(dir, "pty-size"), `${size.rows} ${size.cols}\n`);
+    // stdin is a FIFO, so the kernel gives the slave no size at all. The record
+    // is written by the module that owns the format, so the replay and the
+    // launcher cannot read two spellings of it.
+    writePtySize(dir, size);
     writeWrapper(dir, "pty-launcher.sh", ptyLauncher(this.shell.shell, params.command, size));
     const ctx = {
       id: exec.handle.id,
@@ -518,18 +425,9 @@ export class ShellRegistry {
     this.emit();
   }
 
-  private statusForExit(exec: Execution, code: number | null, signal: string | null): ShellStatus {
-    if (exec.handle.status === "timed-out") return "timed-out";
-    if (exec.cancelRequested) return "cancelled";
-    if (code === 0 && !signal) return "completed";
-    return "failed";
-  }
-
   private async enforceTimeout(exec: Execution): Promise<void> {
-    if (isTerminal(exec.handle.status)) return;
-    exec.handle.status = "timed-out";
-    exec.meta.status = "timed-out";
-    exec.cancelRequested = true;
+    if (isExecutionSettled(exec.lifecycle) || isTerminal(exec.handle.status)) return;
+    this.transitionLifecycle(exec, { type: "timeout-requested" });
     await this.graceful(exec);
     const settled = await this.waitForSettle(exec, DEFAULT_GRACE_MS);
     if (!settled) await this.forceKill(exec);
@@ -555,7 +453,7 @@ export class ShellRegistry {
    */
   private finalizeLater(
     exec: Execution,
-    status: ShellStatus,
+    status: TerminalShellStatus,
     detail: { exitCode?: number | null; signal?: string | null; error?: string } = {},
   ): void {
     void this.finalize(exec, status, detail).catch((error: unknown) => {
@@ -568,11 +466,11 @@ export class ShellRegistry {
 
   private async finalize(
     exec: Execution,
-    status: ShellStatus,
+    status: TerminalShellStatus,
     detail: { exitCode?: number | null; signal?: string | null; error?: string } = {},
   ): Promise<void> {
-    if (exec.finalized) return;
-    exec.finalized = true;
+    if (isExecutionSettled(exec.lifecycle)) return;
+    this.transitionLifecycle(exec, { type: "settled", status });
     if (exec.timeoutTimer) clearTimeout(exec.timeoutTimer);
     exec.exitWatcher?.close();
     if (exec.exitPoll) clearInterval(exec.exitPoll);
@@ -580,12 +478,10 @@ export class ShellRegistry {
     exec.owner?.end();
     exec.owner = undefined;
 
-    exec.handle.status = status;
     exec.handle.endedAt = exec.handle.endedAt ?? now();
     if (detail.exitCode !== undefined) exec.handle.exitCode = detail.exitCode;
     if (detail.signal !== undefined) exec.handle.signal = detail.signal;
     if (detail.error) exec.handle.error = detail.error;
-    exec.meta.status = status;
     exec.meta.endedAt = exec.handle.endedAt;
     exec.meta.exitCode = exec.handle.exitCode ?? null;
     exec.meta.signal = exec.handle.signal ?? null;
@@ -706,7 +602,7 @@ export class ShellRegistry {
       if (satisfied.has(id)) return true;
       if (until.kind === "ready") {
         this.observeReady(exec);
-        if (exec.handle.readyAt || exec.finalized) {
+        if (exec.handle.readyAt || isExecutionSettled(exec.lifecycle)) {
           satisfied.set(id, {});
           return true;
         }
@@ -746,13 +642,13 @@ export class ShellRegistry {
           });
           return true;
         }
-        if (exec.finalized) {
+        if (isExecutionSettled(exec.lifecycle)) {
           satisfied.set(id, {});
           return true;
         }
         return false;
       }
-      if (exec.finalized) {
+      if (isExecutionSettled(exec.lifecycle)) {
         satisfied.set(id, {});
         return true;
       }
@@ -774,7 +670,7 @@ export class ShellRegistry {
         const outcomes: ShellHandle[] = [];
         const stillRunning: ShellHandle[] = [];
         for (const exec of execs) {
-          if (exec.finalized) {
+          if (isExecutionSettled(exec.lifecycle)) {
             outcomes.push({ ...exec.handle });
             if (!aborted && options?.consumeSettles !== false) {
               exec.handle.consumedByAwait = true;
@@ -843,6 +739,13 @@ export class ShellRegistry {
       params.mode === "all"
         ? `mode all is a bounded head read (up to ${MAX_READ_LINES} lines / ${MAX_READ_BYTES / 1024} KiB); use mode offset with nextByte/nextLine to page`
         : undefined;
+    // A viewport has no page to continue: its lines are screen rows, not file
+    // lines, and there is no next byte. Promising the byte-stream paging advice
+    // here sent callers to an offset that is already EOF.
+    const screenNote =
+      params.mode === "all"
+        ? `mode all is a bounded head read of the viewport (up to ${MAX_READ_LINES} lines); read again for the current screen, or stream "combined" to page the bytes`
+        : undefined;
     const effective: ShellReadParams =
       params.mode === "all"
         ? { ...params, mode: "head", lines: params.lines ?? MAX_READ_LINES, maxBytes: params.maxBytes ?? MAX_READ_BYTES }
@@ -856,7 +759,7 @@ export class ShellRegistry {
     if (stream === "ptyView" && handle.log.ptyView) {
       // A terminal recording is replayed into a viewport: the caller asked what
       // is on the screen, not which bytes the program wrote to get there.
-      const outcome = await readScreenLog(handle.log.ptyView, effective, readScreenSize(handle.log.dir));
+      const outcome = await this.screenOutcome(handle, effective);
       return {
         id: handle.id,
         status: handle.status,
@@ -867,7 +770,7 @@ export class ShellRegistry {
         totalBytes: outcome.totalBytes,
         range: outcome.range,
         fullLogPath: handle.log.ptyView,
-        note: [allNote, outcome.note].filter(Boolean).join("; ") || undefined,
+        note: [screenNote, outcome.note].filter(Boolean).join("; ") || undefined,
       };
     }
     if (stream === "ptyView") {
@@ -904,6 +807,18 @@ export class ShellRegistry {
       fullLogPath: path,
       note: [note, allNote, outcome.note].filter(Boolean).join("; ") || undefined,
     };
+  }
+
+  /**
+   * Turn a recording into the viewport a caller asked for.
+   *
+   * One place reads the geometry the child ran at and hands it to the replay, so
+   * a read and the screen that `shell_send` reports cannot disagree about the
+   * width, and neither of them invents its own.
+   */
+  private screenOutcome(handle: ShellHandle, params: ShellReadParams): Promise<ReadOutcome> {
+    const path = handle.log.ptyView ?? handle.log.combined;
+    return readScreenLog(path, params, { size: readPtySize(handle.log.dir) });
   }
 
   private streamPath(exec: Execution, stream: string): string {
@@ -973,7 +888,7 @@ export class ShellRegistry {
         continue;
       }
       if (exec.handle.scope === "workspace") this.assertWorkspaceWriter("shell_cancel");
-      exec.cancelRequested = true;
+      this.transitionLifecycle(exec, { type: "cancel-requested" });
       const ladder = params.ladder ?? "graceful";
       // Every other wait in this runtime is clamped; a grace period that could be
       // an hour is a hang with a supported spelling.
@@ -1035,7 +950,7 @@ export class ShellRegistry {
   }
 
   private waitForSettle(exec: Execution, ms: number): Promise<boolean> {
-    if (exec.finalized) return Promise.resolve(true);
+    if (isExecutionSettled(exec.lifecycle)) return Promise.resolve(true);
     return new Promise((resolve) => {
       let done = false;
       const finish = (value: boolean) => {
@@ -1046,9 +961,9 @@ export class ShellRegistry {
         resolve(value);
       };
       const unsubscribe = this.subscribe(() => {
-        if (exec.finalized) finish(true);
+        if (isExecutionSettled(exec.lifecycle)) finish(true);
       });
-      const timer = setTimeout(() => finish(exec.finalized), ms);
+      const timer = setTimeout(() => finish(isExecutionSettled(exec.lifecycle)), ms);
       timer.unref?.();
     });
   }
@@ -1139,8 +1054,11 @@ export class ShellRegistry {
     if (params.request) this.writeRequestRecord(params.request, params.id, "send");
     let screen: string | undefined;
     try {
-      const view = await this.read({ id: params.id, stream: "ptyView", mode: "tail", lines: 80 });
-      screen = view.text;
+      // The whole viewport, from the one path that knows how a recording becomes
+      // a screen. This used to re-enter the public `read`, which tied the write
+      // path to a tool-facing mode, note and range it never used.
+      const outcome = await this.screenOutcome(exec.handle, { id: exec.handle.id, mode: "tail" });
+      screen = outcome.text;
     } catch {
       /* the screen is a convenience, not the contract */
     }
@@ -1264,11 +1182,11 @@ export class ShellRegistry {
       if (this.executions.has(handle.id)) continue;
       if (isTerminal(handle.status)) continue;
 
-      const exit = readJson<{ exitCode?: number | null; endedAt?: number; status?: ShellStatus }>(
+      const exit = readJson<{ exitCode?: number | null; endedAt?: number; status?: TerminalShellStatus }>(
         join(dir, "exit.json"),
       );
       if (exit) {
-        const status: ShellStatus = exit.status ?? statusFromExitRecord(exit.exitCode ?? null);
+        const status: TerminalShellStatus = exit.status ?? statusFromExitRecord(exit.exitCode ?? null);
         const exec = this.restoreExecution(handle, meta, dir);
         await this.finalize(exec, status, { exitCode: exit.exitCode ?? null });
         finalized.push(handle.id);
@@ -1301,8 +1219,7 @@ export class ShellRegistry {
       }
 
       const exec = this.restoreExecution(handle, meta, dir);
-      exec.handle.status = "running";
-      exec.meta.status = "running";
+      this.transitionLifecycle(exec, { type: "adopted" });
       await this.persist(exec);
       this.watchExitRecord(exec);
       adopted.push(handle.id);
@@ -1319,8 +1236,7 @@ export class ShellRegistry {
       durable: true,
       identities: meta.identity ? [meta.identity] : [],
       identity: meta.identity,
-      cancelRequested: false,
-      finalized: false,
+      lifecycle: createExecutionLifecycle(),
     };
     this.executions.set(handle.id, exec);
     void dir;
@@ -1352,7 +1268,7 @@ export class ShellRegistry {
     const exitPath = join(exec.handle.log.dir, "exit.json");
     const pidPath = join(exec.handle.log.dir, "pid.json");
     const check = () => {
-      if (exec.finalized) return;
+      if (isExecutionSettled(exec.lifecycle)) return;
       if (!exec.identity) {
         const pidRecord = readJson<{ pid: number; pgid: number; starttime: number }>(pidPath);
         if (pidRecord) {
@@ -1368,7 +1284,7 @@ export class ShellRegistry {
       const exit = readJson<{
         exitCode?: number | null;
         endedAt?: number;
-        status?: ShellStatus;
+        status?: TerminalShellStatus;
         signal?: string | null;
         error?: string;
       }>(exitPath);
@@ -1379,7 +1295,8 @@ export class ShellRegistry {
           this.emit();
           return;
         }
-        const status = exit.status ?? this.statusForExit(exec, exit.exitCode ?? null, exit.signal ?? null);
+        const status =
+          exit.status ?? executionStatusForExit(exec.lifecycle, exit.exitCode ?? null, exit.signal ?? null);
         this.finalizeLater(exec, status, {
           exitCode: exit.exitCode ?? null,
           signal: exit.signal ?? null,
@@ -1500,79 +1417,13 @@ export class ShellRegistry {
   }
 }
 
-/**
- * Write to a pty execution's stdin FIFO.
- *
- * The open is non-blocking on purpose: a FIFO with no reader would otherwise
- * block this process forever, and "nobody is listening" is a fact the caller
- * needs, not a hang. A full pipe buffer is retried briefly, because the reader
- * on the other side drains continuously.
- */
-async function writeFifo(path: string, text: string): Promise<boolean> {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_WRONLY | constants.O_NONBLOCK);
-  } catch {
-    return false;
-  }
-  try {
-    const buffer = Buffer.from(text, "utf8");
-    let offset = 0;
-    let stalls = 0;
-    while (offset < buffer.length) {
-      try {
-        offset += writeSync(fd, buffer, offset, buffer.length - offset);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EAGAIN" || stalls++ > 200) return false;
-        await sleep(5);
-      }
-    }
-    return true;
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/** The PTY size the launcher recorded, so a replay uses the real width. */
-function readScreenSize(dir: string): { cols?: number; rows?: number } {
-  try {
-    const [rows, cols] = readFileSync(join(dir, "pty-size"), "utf8").trim().split(/\s+/).map(Number);
-    if (rows && cols && Number.isFinite(rows) && Number.isFinite(cols)) return { rows, cols };
-  } catch {
-    /* the screen model's defaults are the fallback */
-  }
-  return {};
-}
-
-function sanitizeRequest(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 96);
-}
-
-/**
- * Name the file that answers a replay key.
- *
- * Two problems share one file name, so it answers both. The sanitized form is
- * lossy: `"build one"` and `"build/one"` both become `build_one`, so the second
- * start would find the first one's record, return its handle, and never run its
- * command while reporting success. A key the sanitizer changed therefore carries
- * a digest of the exact string the caller passed. The kind is in the name too,
- * because one request key used by both `shell_start` and `shell_send` would
- * otherwise let a start replay answer with the id minted for a keystroke.
- */
-function requestFileName(request: string, kind: "start" | "send"): string {
-  const safe = sanitizeRequest(request);
-  const digest =
-    safe === request ? "" : `.${createHash("sha256").update(request).digest("hex").slice(0, 12)}`;
-  return `${safe}${digest}.${kind}.json`;
-}
-
 function defaultName(command: string): string {
   const first = command.trim().split(/\s+/).slice(0, 3).join(" ");
   return first.length > 40 ? `${first.slice(0, 37)}...` : first;
 }
 
 /** A sealed exit record names an outcome even when no process classifies it. */
-function statusFromExitRecord(exitCode: number | null): ShellStatus {
+function statusFromExitRecord(exitCode: number | null): TerminalShellStatus {
   if (exitCode === 0) return "completed";
   if (exitCode === null) return "lost";
   return "failed";
@@ -1596,16 +1447,4 @@ function safeReaddir(path: string): string[] {
   } catch {
     return [];
   }
-}
-
-async function writeJsonAtomic(path: string, value: unknown, sync = true): Promise<void> {
-  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-  const handle = await open(tmp, "w");
-  try {
-    await handle.writeFile(JSON.stringify(value, null, 2));
-    if (sync) await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await rename(tmp, path);
 }

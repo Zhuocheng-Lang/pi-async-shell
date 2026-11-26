@@ -2,12 +2,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Writable } from "node:stream";
 import { EXEC_TAG_ENV } from "./containment.ts";
 import { assertLinux } from "./identity.ts";
+import { clampPtySize, type PtySize } from "./types.ts";
+
+/**
+ * The terminal geometry is declared once, in the vocabulary module, because the
+ * screen replay needs it too and this module owns a child process.
+ */
+export type { PtySize } from "./types.ts";
 
 const IDENTITY_LINES = [
   "st=$(cut -d' ' -f22 /proc/$$/stat 2>/dev/null || echo 0)",
@@ -76,29 +83,40 @@ export const PTY_WRAPPER = [
   "",
 ].join("\n");
 
-export interface PtySize {
-  cols: number;
-  rows: number;
-}
-
-const DEFAULT_PTY_COLS = 80;
-const DEFAULT_PTY_ROWS = 24;
 /** Matches the registry's `PI_ASYNC_SHELL_MAX_LOG_BYTES` default. */
 const DEFAULT_PTY_LOG_BYTES = 100 * 1024 * 1024;
 
-function clampInt(value: number, min: number, max: number, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(value)));
-}
-
 export function resolvePtySize(env: NodeJS.ProcessEnv = process.env): PtySize {
   const fromTty = process.stdout.isTTY;
-  const cols = fromTty ? Number(process.stdout.columns) : Number(env.COLUMNS);
-  const rows = fromTty ? Number(process.stdout.rows) : Number(env.LINES);
-  return {
-    cols: clampInt(cols, 20, 500, DEFAULT_PTY_COLS),
-    rows: clampInt(rows, 4, 200, DEFAULT_PTY_ROWS),
-  };
+  return clampPtySize({
+    cols: fromTty ? Number(process.stdout.columns) : Number(env.COLUMNS),
+    rows: fromTty ? Number(process.stdout.rows) : Number(env.LINES),
+  });
+}
+
+/** The file in an execution directory that carries the geometry the launcher applied. */
+export const PTY_SIZE_FILE = "pty-size";
+
+/** Record the geometry so a replay uses the size the child actually got. */
+export function writePtySize(dir: string, size: PtySize): void {
+  writeFileSync(join(dir, PTY_SIZE_FILE), `${size.rows} ${size.cols}\n`);
+}
+
+/**
+ * Read the geometry the child ran at.
+ *
+ * `undefined` is the honest answer for a missing or unreadable record. A caller
+ * that defaults silently presents its own 80x24 as the terminal's size, and the
+ * viewport it returns is wrapped at a width the program never saw.
+ */
+export function readPtySize(dir: string): PtySize | undefined {
+  try {
+    const [rows, cols] = readFileSync(join(dir, PTY_SIZE_FILE), "utf8").trim().split(/\s+/).map(Number);
+    if (!Number.isFinite(rows) || !Number.isFinite(cols)) return undefined;
+    return clampPtySize({ cols, rows });
+  } catch {
+    return undefined;
+  }
 }
 
 export function ptyLauncher(shell: string, command: string, size: PtySize): string {

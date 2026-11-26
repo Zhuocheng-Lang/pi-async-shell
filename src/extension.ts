@@ -18,6 +18,15 @@ import { claimHandoff, handoffKey, publishHandoff } from "./core/reload-hub.ts";
 import { acquireWorkspaceLock, releaseWorkspaceLock } from "./core/workspace-lock.ts";
 import { describeShellPolicy, resolveShell } from "./core/shell-policy.ts";
 import {
+  completionMessage,
+  describeHandle,
+  formatBytes,
+  formatDuration,
+  outcomeExcerpt,
+  sendHeadline,
+  startText,
+} from "./presentation.ts";
+import {
   isTerminal,
   type CompletionRecord,
   type ShellAwaitResult,
@@ -140,6 +149,7 @@ const handleSchema = Type.Object({
   exitSource: Type.Optional(stringEnum(["pipefail", "last-command"] as const)),
   consumedByAwait: Type.Optional(Type.Boolean()),
   notifyOnCompletion: Type.Optional(Type.Boolean()),
+  triggerOnCompletion: Type.Optional(Type.Boolean()),
   delivery: Type.Optional(deliveryEnum),
   timeoutSeconds: Type.Optional(Type.Number()),
 });
@@ -228,81 +238,6 @@ function json(value: unknown): JsonObject {
   // SAFETY: every call site supplies a tool-result object; compact recursively
   // removes undefined values and class instances, leaving JSON-compatible data.
   return compact(value) as unknown as JsonObject;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
-}
-
-function describeHandle(handle: ShellHandle): string {
-  const parts = [handle.id, `"${handle.name}"`, handle.status];
-  if (handle.exitCode !== undefined && handle.exitCode !== null) parts.push(`exit ${handle.exitCode}`);
-  if (handle.signal) parts.push(`signal ${handle.signal}`);
-  if (handle.endedAt) parts.push(formatDuration(handle.endedAt - handle.startedAt));
-  else parts.push(`${formatDuration(Date.now() - handle.startedAt)} so far`);
-  parts.push(`scope ${handle.scope}`, `binding ${handle.binding}`);
-  if (handle.readyAt) parts.push("ready");
-  parts.push(`${formatBytes(handle.bytes.combined)} logged`);
-  if (handle.bytes.capReached) parts.push("log cap reached");
-  if (handle.error) parts.push(`error: ${handle.error}`);
-  if (handle.exitSource === "pipefail") parts.push("pipeline status: pipefail");
-  else if (handle.exitSource === "last-command") parts.push("pipeline status: last stage only");
-  return parts.join(" · ");
-}
-
-/** A bounded, human-readable excerpt of the log for an outcome message. */
-function outcomeExcerpt(text: string | undefined, failed: boolean): string[] {
-  const lines = (text ?? "")
-    .split("\n")
-    .map((line) => line.replace(/\s+$/, "").slice(0, 500))
-    .filter((line) => line.trim().length > 0);
-  if (lines.length === 0) return [];
-  const tail = lines.slice(-10);
-  const tailBlock = ["  --- tail ---", ...tail.map((line) => `  ${line}`)];
-  if (!failed) return tailBlock;
-  const errorIndex = lines.findIndex((line) => /error|fail|fatal|exception|panic|Traceback/i.test(line));
-  if (errorIndex < 0) return tailBlock;
-  const from = Math.max(0, errorIndex - 2);
-  const to = Math.min(lines.length, errorIndex + 8);
-  const block = ["  --- first error ---", ...lines.slice(from, to).map((line) => `  ${line}`)];
-  const tailFrom = Math.max(to, lines.length - 6);
-  if (tailFrom < lines.length) {
-    block.push("  --- tail ---", ...lines.slice(tailFrom).map((line) => `  ${line}`));
-  }
-  return block;
-}
-
-/** Completion and await messages carry the outcome, not just a log path. */
-async function readOutcomeExcerpt(
-  registry: ShellRegistry | undefined,
-  id: string,
-  status: ShellHandle["status"],
-  lines = 20,
-): Promise<string[]> {
-  if (!registry) return [];
-  try {
-    const read = await registry.read({ id, mode: "tail", lines, stream: "combined" });
-    return outcomeExcerpt(read.text, status === "failed" || status === "timed-out");
-  } catch {
-    return [];
-  }
-}
-
-/**
- * `wrote: false` means the bytes did not reach the child: either the stdin FIFO
- * has no reader yet, or this request id already sent once.
- */
-function sendHeadline(result: ShellSendResult): string {
-  if (result.wrote) return `Sent to ${result.id}`;
-  return `Nothing written to ${result.id} (no reader on its stdin, or this request was already sent)`;
 }
 
 /**
@@ -400,25 +335,6 @@ function releaseHeldSettle(id: string): void {
   enqueueCompletion(held);
 }
 
-/** A start result is a handle; a settled one also carries its output. */
-function startText(
-  handle: ShellHandle,
-  inlineSettleMs: number | undefined,
-  preview: string | undefined,
-  note?: string,
-): string {
-  const lines = [`Started ${describeHandle(handle)}`];
-  if (note) lines.push(`  note: ${note}`);
-  if (inlineSettleMs !== undefined) {
-    lines.push(
-      `Settled inside the ${formatDuration(inlineSettleMs)} inline window, so the result is here and no shell_await is needed.`,
-    );
-    lines.push(...outcomeExcerpt(preview, handle.status === "failed" || handle.status === "timed-out"));
-  }
-  lines.push(`log: ${handle.log.combined}`);
-  return lines.join("\n");
-}
-
 function requireRegistry(): ShellRegistry {
   assertLinux();
   if (!state.registry) {
@@ -478,35 +394,6 @@ function scheduleFlush(): void {
   state.flushTimer.unref?.();
 }
 
-async function completionMessage(records: CompletionRecord[]): Promise<string> {
-  const lines = ["<async-shell-completion>"];
-  for (const record of records) {
-    const outcome =
-      record.status === "completed"
-        ? "completed"
-        : record.status === "cancelled"
-          ? "cancelled"
-          : record.status === "timed-out"
-            ? "timed out"
-            : record.status === "lost"
-              ? "lost (liveness could not be proven)"
-              : `failed${record.exitCode !== null && record.exitCode !== undefined ? ` (exit ${record.exitCode})` : ""}`;
-    lines.push(
-      `${record.id} "${record.name}" ${outcome} after ${formatDuration(record.durationMs)} · scope ${record.scope} · binding ${record.binding}`,
-    );
-    if (record.error) lines.push(`  error: ${record.error}`);
-    if (record.exitSource === "pipefail") lines.push("  pipeline status: pipefail (any stage failure fails the command)");
-    else if (record.exitSource === "last-command") lines.push("  pipeline status: last stage only (shell has no pipefail)");
-    lines.push(`  exit: ${record.exitCode ?? "unknown"}`);
-    if (record.signal) lines.push(`  signal: ${record.signal}`);
-    lines.push(...(await readOutcomeExcerpt(state.registry, record.id, record.status)));
-    lines.push(`  log: ${record.log.combined} (${formatBytes(record.bytes.combined)})`);
-  }
-  lines.push("Read output with shell_read; do not re-run a command that already completed.");
-  lines.push("</async-shell-completion>");
-  return lines.join("\n");
-}
-
 async function flushCompletions(): Promise<void> {
   if (state.flushTimer) {
     clearTimeout(state.flushTimer);
@@ -521,7 +408,7 @@ async function flushCompletions(): Promise<void> {
   if (records.length === 0) return;
   state.pending = state.pending.filter((record) => !records.includes(record));
   for (const record of records) state.delivered.add(record.id);
-  const text = await completionMessage(records);
+  const text = await completionMessage(records, state.registry);
   // triggerOnCompletion decides whether an idle session starts a turn. A
   // workspace record defaults to no notification at all, so it never wakes one.
   const shouldTrigger = records.some(
@@ -705,29 +592,34 @@ function surfaceWorkspaceCompletions(registry: ShellRegistry): void {
 const promptSnippet =
   "Start, await, read, promote, send to, cancel, or inspect asynchronous shell executions";
 
-const basePromptGuidelines = [
-  "Use shell_start for commands that are slow, that should run in parallel, that must outlive the turn, or whose full log matters; keep bash for commands that finish in a second or two and need no log.",
-  "shell_start returns a handle immediately, except that a command settling within inlineSettleMs (default 1000) returns its status and output tail in that same call; then there is nothing to await. Do independent work first, then call shell_await; do not sleep or poll shell_status in a loop.",
-  "shell_await uses waitMs up to 50000 (default 30000); larger values are clamped and noted, not rejected. Use one long wait per script, leave room in codemode's 60-second budget, then end the turn and let completion delivery wake you.",
-  "In print or JSON single-shot mode, agent_before_settle waits for each live, unready session execution with notifyOnCompletion and triggerOnCompletion enabled, then delivers its completion and continues the run. Ready companions and executions with either option false do not hold settlement; session_shutdown still reaps remaining session work.",
-  "Do not pipe command output to tail, head, grep, or wc: it caps the durable log before shell_read can search it, and on a shell without pipefail it also replaces the source exit code. Run the command whole and use shell_read with mode tail, grep, or offset.",
-  "Use shell_start.cwd instead of prefixing the command with cd, so the record and the process agree on the working directory.",
-  "Pipelines in a bash-like shell run with pipefail; any stage failure fails the command. A POSIX fallback reports only the last stage, and the handle names the exitSource.",
-  "shell_read returns a bounded slice. Use mode grep or offset to find what matters; mode all is a bounded head read with paging guidance in its note.",
-  "shell_send requires binding pty; a pipe execution has no terminal and refuses stdin.",
-  "shell_read with stream ptyView returns the rendered screen of a pty execution; use it after shell_send to see what a terminal UI is showing.",
-  "shell_cancel verifies that the process tree is gone; cancellation stops processes but does not roll back their effects.",
-  "A completion reaches a running agent as a steer message before the next LLM call; shell_start delivery: \"settle\" holds it until the run settles. Do not end the turn only to learn that a command finished.",
-  "When no later action in the task depends on an external state change, such as a registry index or a CDN cache refreshing after a local verification or a publish already succeeded, report what is verified and stop: do not poll with shell_await and do not start a watcher.",
-  "When a later action does depend on an external state, such as a CI run, start one command that exits when the condition resolves and give it timeoutSeconds; await it once, and if it does not settle, end the turn and let the completion message wake you.",
-];
+const toolPromptGuidelines = {
+  shell_start: [
+    "Use shell_start for slow commands, parallel commands, durable logs, or work that outlives the turn. Keep bash for commands that finish within two seconds and need no log.",
+    "Use shell_read instead of tail, head, grep, or wc output pipes. Output pipes can truncate the durable log or replace the exit status.",
+    "Pass cwd instead of prefixing the command with cd.",
+    "When a later action needs an external state change, start one command that exits on that change. Set timeoutSeconds on that command. When no later action needs the new state, report the verified result and stop.",
+  ],
+  shell_await: [
+    "Finish independent work before waiting. Use at most one long wait in each codemode script. Reserve time within the 60-second script budget. When a full-length wait expires, end the turn and let completion delivery resume the work.",
+    "Wait only for an outcome that a later action uses. Otherwise, report the verified result and stop.",
+  ],
+  shell_read: [
+    "Use grep to locate output. Use offset to page through results. Read only the slices needed for the next action.",
+    "When inspecting an interactive terminal, use ptyView after sending input.",
+  ],
+  shell_cancel: [
+    "Use shell_cancel only to stop work. Cancellation leaves filesystem and external side effects in place.",
+  ],
+  shell_status: [
+    "Use shell_status once for each deliberate inspection. Use shell_await instead of status polling. When completion delivery is pending, end the turn.",
+  ],
+};
 
 export default function piAsyncShell(pi: ExtensionAPI): void {
   assertLinux();
   state.pi = pi;
   const shellPolicy = resolveShell(process.env);
   state.shellPolicyText = describeShellPolicy(shellPolicy);
-  const promptGuidelines = [state.shellPolicyText, ...basePromptGuidelines];
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -830,7 +722,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       entries.push({
         type: "custom_message",
         customType: COMPLETION_TYPE,
-        content: await completionMessage(records),
+        content: await completionMessage(records, state.registry),
         display: true,
       });
       continueTurn = true;
@@ -851,53 +743,71 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "shell_start",
     label: "Start async shell",
-    description: `Start a session or workspace command with pipe or pty I/O. Returns a handle, unless the command settles within inlineSettleMs, in which case this call returns its outcome and output tail. ${shellPolicy.shell} -c runs the command; explicit env values override the default credential filter.`,
+    description: `Start a session or workspace command with pipe or pty I/O. When the command outlives inlineSettleMs, return its handle. When the command settles within inlineSettleMs, return its outcome and output tail. ${state.shellPolicyText}`,
     promptSnippet,
-    promptGuidelines,
+    promptGuidelines: toolPromptGuidelines.shell_start,
     parameters: Type.Object({
-      command: Type.String({ description: "Shell command to run" }),
-      name: Type.Optional(Type.String({ description: "2-6 word label for the dock and the handle list" })),
+      command: Type.String({
+        description:
+          "Shell command to run. Bash-like shells apply pipefail to pipelines. The POSIX fallback records last-command in exitSource.",
+      }),
+      name: Type.Optional(Type.String({ description: "Label for the dock and handle list. Use 2-6 words." })),
       cwd: Type.Optional(
-        Type.String({ description: "Working directory. Default: the Pi session's cwd." }),
+        Type.String({ description: "Working directory. The default is the Pi session's cwd." }),
       ),
       env: Type.Optional(
         Type.Record(Type.String(), Type.String(), {
           description:
-            "Extra environment values. An explicit value also restores a credential the default filter removed.",
+            "Extra environment values. Explicit values override the default credential filter.",
         }),
       ),
-      scope: Type.Optional(scopeEnum),
-      binding: Type.Optional(bindingEnum),
+      scope: Type.Optional(
+        stringEnum(["session", "workspace"] as const, {
+          description:
+            "Scope selects ownership and lifetime. Session scope, the default, ties cleanup to the Pi session. Workspace scope survives Pi restarts. In print/JSON mode, both notifyOnCompletion and triggerOnCompletion must be true for live unready session work to hold settlement. Readiness releases this hold.",
+        }),
+      ),
+      binding: Type.Optional(
+        stringEnum(["pipe", "pty"] as const, {
+          description:
+            "Select I/O topology. The pipe default captures stdout and stderr separately. Use pty for terminal interaction through shell_send and ptyView.",
+        }),
+      ),
       timeoutSeconds: Type.Optional(
         Type.Number({
           minimum: 0,
           description:
-            "Cancel through the graceful ladder after this many seconds. The outcome is timed-out, not failed.",
+            "Cancel through the graceful ladder after this many seconds. Report the outcome as timed-out rather than failed.",
         }),
       ),
       notifyOnCompletion: Type.Optional(
         Type.Boolean({
           description:
-            "Deliver a completion message when the execution settles. Default true for session scope, false for workspace scope. When false, the execution does not hold print/JSON settlement.",
+            "When the execution settles, deliver a completion message. The default is true for session scope and false for workspace scope.",
         }),
       ),
       triggerOnCompletion: Type.Optional(
         Type.Boolean({
           description:
-            "Let a completion message resume an idle turn. Default true; false reports without waking the agent and does not hold print/JSON settlement.",
+            "Allow completion messages to resume an idle turn. The default is true. A false value reports completions without waking the agent.",
         }),
       ),
-      delivery: Type.Optional(deliveryEnum),
+      delivery: Type.Optional(
+        stringEnum(["steer", "settle"] as const, {
+          description:
+            "Select completion timing for a running agent. The steer default delivers before the next LLM call. The settle value holds completion until the run settles.",
+        }),
+      ),
       request: Type.Optional(
         Type.String({
           description:
-            "Replay key for this call. A second shell_start with the same key returns the first handle and runs nothing. Recognized characters: letters, digits, dot, dash, underscore.",
+            "Replay key for this call. When the key repeats, return the first handle without running another command. Use letters, digits, dot, dash, or underscore.",
         }),
       ),
       inlineSettleMs: Type.Optional(
         Type.Number({
           minimum: 0,
-          description: `Hold this call open this long for a settle. Default ${DEFAULT_INLINE_SETTLE_MS}; 0 returns the handle at once. Values above ${MAX_INLINE_SETTLE_MS} are clamped, not rejected.`,
+          description: `Hold this call open for a settle up to this duration. The default is ${DEFAULT_INLINE_SETTLE_MS}. Zero returns the handle immediately. The tool clamps values above ${MAX_INLINE_SETTLE_MS} to ${MAX_INLINE_SETTLE_MS} and adds a note.`,
         }),
       ),
     }),
@@ -946,15 +856,15 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     name: "shell_await",
     label: "Await async shell",
     description:
-      "Wait for exit, $PI_ASYNC_SHELL_EXEC_DIR/ready, or an output regex. Timeout never cancels. waitMs defaults to 30000 and is clamped to 50000 rather than rejected; values above the cap leave a note in the result. In codemode, end the turn after a full-length wait and rely on completion delivery.",
-    promptGuidelines,
+      "Wait for exit, $PI_ASYNC_SHELL_EXEC_DIR/ready, or an output regex. A timeout ends only the wait. The execution continues.",
+    promptGuidelines: toolPromptGuidelines.shell_await,
     parameters: Type.Object({
       ids: Type.Union([Type.String(), Type.Array(Type.String())], {
         description: "One handle id, or a list of them.",
       }),
       mode: Type.Optional(
         stringEnum(["all", "any"] as const, {
-          description: "all waits for every id; any returns when the first one satisfies until.",
+          description: "The all value waits for every id. The any value returns after the first id satisfies until.",
         }),
       ),
       until: Type.Optional(
@@ -966,20 +876,33 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
               kind: Type.Literal("pattern"),
               regex: Type.String({
                 description:
-                  "JavaScript regular expression. Length and nested quantifiers are limited, because the match runs on the main thread.",
+                  "JavaScript regular expression. The matcher limits length and nested quantifiers because it runs on the main thread.",
               }),
-              stream: Type.Optional(streamEnum),
-              since: Type.Optional(Type.Union([Type.Number(), Type.Literal("now")])),
+              stream: Type.Optional(
+                stringEnum(["combined", "stdout", "stderr", "ptyView"] as const, {
+                  description:
+                    "Select the output stream to match. The combined default includes both pipe streams. A pty records one stream, so every value reads its recording.",
+                }),
+              ),
+              since: Type.Optional(
+                Type.Union([Type.Number(), Type.Literal("now")], {
+                  description:
+                    "Select the first byte to match. The default is zero. The now value starts at the current end of the stream.",
+                }),
+              ),
             }),
           ],
           {
             description:
-              "What ends the wait. exit (default) waits for settlement; ready waits for the $PI_ASYNC_SHELL_EXEC_DIR/ready marker, which does not end the execution; pattern waits for a line of output. A pty records one stream, so stderr reads and waits as combined.",
+              "Select the condition that ends the wait. The exit default waits for settlement. The ready value waits for the $PI_ASYNC_SHELL_EXEC_DIR/ready marker without ending the execution. The pattern value waits for a matching output line. A pty records one stream. Reads and waits map stderr to combined.",
           },
         ),
       ),
       waitMs: Type.Optional(
-        Type.Number({ minimum: 0, description: "Default 30000; values above 50000 are clamped, not rejected" }),
+        Type.Number({
+          minimum: 0,
+          description: `The default is ${DEFAULT_WAIT_MS}. The tool clamps values above ${MAX_WAIT_MS} to ${MAX_WAIT_MS} and adds a note.`,
+        }),
       ),
       includeOutputPreview: Type.Optional(
         Type.Boolean({ description: "Include the last 20 lines of each settled handle. Default true." }),
@@ -1056,15 +979,20 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     name: "shell_read",
     label: "Read async shell log",
     description:
-      "Read a bounded slice of an execution's durable output. Streams: combined, stdout, stderr, ptyView. Modes: tail, head, offset, grep, all (a bounded head read with paging guidance in the note). Hard cap: 2000 lines or 50 KiB per call. ptyView is the rendered terminal screen (a viewport, not a scrollback); combined is the byte stream.",
-    promptGuidelines,
+      "Read a bounded slice of an execution's durable output or a PTY's rendered screen. Each call returns at most 2000 lines or 50 KiB.",
+    promptGuidelines: toolPromptGuidelines.shell_read,
     parameters: Type.Object({
       id: Type.String({ description: "Handle id." }),
-      stream: Type.Optional(streamEnum),
+      stream: Type.Optional(
+        stringEnum(["combined", "stdout", "stderr", "ptyView"] as const, {
+          description:
+            "The combined default reads the byte stream. The stdout and stderr values select pipe streams. The ptyView value reads the rendered terminal viewport rather than scrollback.",
+        }),
+      ),
       mode: Type.Optional(
         stringEnum(["tail", "head", "offset", "grep", "all"] as const, {
           description:
-            "tail is the default. offset pages from lineOffset or byteOffset, grep filters by pattern, and all is a bounded head read that names its next page.",
+            "tail is the default. offset pages from lineOffset or byteOffset, grep filters by pattern, and all is a bounded head read: on a byte stream its note names the next page, and on ptyView it returns the viewport, which has no page to continue.",
         }),
       ),
       lines: Type.Optional(
@@ -1082,14 +1010,14 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       pattern: Type.Optional(
         Type.String({
           description:
-            "With mode grep: a JavaScript regular expression. Length and nested quantifiers are limited, because the match runs on the main thread.",
+            "When mode is grep, provide a JavaScript regular expression. The matcher limits length and nested quantifiers because it runs on the main thread.",
         }),
       ),
       context: Type.Optional(
         Type.Number({ minimum: 0, maximum: 20, description: "With mode grep: lines of context around each match. Default 2." }),
       ),
       stripAnsi: Type.Optional(
-        Type.Boolean({ description: "Remove escape sequences from the returned text. Default true." }),
+        Type.Boolean({ description: "Strip escape sequences from returned text. The default is true." }),
       ),
     }),
     outputSchema: readResultSchema,
@@ -1117,14 +1045,13 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     name: "shell_promote",
     label: "Promote async shell",
     description:
-      "Move a live execution to a wider supervision scope. This is the honest name for backgrounding. Promotion is one-directional and audited.",
-    promptGuidelines,
+      "Move a live session execution to workspace scope without restarting it. Promotion is one-directional and audited.",
     parameters: Type.Object({
       id: Type.String({ description: "Handle id of a live execution." }),
       to: Type.Optional(
         stringEnum(["workspace"] as const, {
           description:
-            "Omit it. Promotion widens ownership to workspace, and no other value exists: a session execution is already narrow, and narrowing a workspace execution is refused.",
+            "Omit this value. Promotion only widens ownership to workspace. Session executions already have the narrower scope. Workspace executions reject narrowing.",
         }),
       ),
       adopterNotification: Type.Optional(
@@ -1147,8 +1074,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     name: "shell_send",
     label: "Send to async shell",
     description:
-      "Write stdin text or key chords into a pty execution. Refuses on pipe, because a pipe has no terminal. The write goes to the execution's stdin FIFO, so it works from a later Pi process too.",
-    promptGuidelines,
+      "Write stdin text or key chords to a pty execution. Pipe executions reject stdin because they have no terminal. A later Pi process can write through the execution's stdin FIFO.",
     parameters: Type.Object({
       id: Type.String({ description: "Handle id of a pty execution." }),
       text: Type.Optional(Type.String({ description: "Literal input, written as given." })),
@@ -1197,8 +1123,8 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
     name: "shell_cancel",
     label: "Cancel async shell",
     description:
-      "Cancel one or more executions: graceful signal, grace period, forced kill, then verification that the process tree is gone. Cancellation is not rollback.",
-    promptGuidelines,
+      "Cancel one or more executions through the graceful or forced ladder. The tool verifies that no tracked process remains.",
+    promptGuidelines: toolPromptGuidelines.shell_cancel,
     parameters: Type.Object({
       ids: Type.Union([Type.String(), Type.Array(Type.String())], {
         description: "One handle id, or a list of them.",
@@ -1206,7 +1132,7 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
       ladder: Type.Optional(
         stringEnum(["graceful", "force"] as const, {
           description:
-            "graceful (default) sends the interrupt a human would type or SIGTERM to the group, waits graceMs, then escalates; force starts at SIGKILL.",
+            "The graceful default sends the user's interrupt or SIGTERM to the group. It waits graceMs before escalating. The force value starts at SIGKILL.",
         }),
       ),
       graceMs: Type.Optional(
@@ -1237,9 +1163,8 @@ export default function piAsyncShell(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "shell_status",
     label: "Async shell status",
-    description:
-      "Point-in-time inspection of one handle or of all handles. This is not a polling primitive: synchronise with shell_await, and wait idly by ending the turn.",
-    promptGuidelines,
+    description: "Inspect one handle or all handles at a point in time.",
+    promptGuidelines: toolPromptGuidelines.shell_status,
     parameters: Type.Object({
       id: Type.Optional(Type.String({ description: "One handle id. Omit to list every handle and workspace record." })),
     }),
