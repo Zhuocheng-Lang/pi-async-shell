@@ -29,6 +29,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # prepublishOnly runs the history-dependent co-change tests.
+          fetch-depth: 0
 
       # Reads the pinned version from packageManager in package.json.
       - uses: pnpm/action-setup@v4

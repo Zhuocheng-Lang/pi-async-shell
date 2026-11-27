@@ -26,6 +26,9 @@ jobs:
         node: ['22.19.0', '26']
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The co-change end-to-end tests read the repository's real history.
+          fetch-depth: 0
 
       # Reads the pinned version from packageManager in package.json.
       - uses: pnpm/action-setup@v4
