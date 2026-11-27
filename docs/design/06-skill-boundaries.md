@@ -1,6 +1,6 @@
 ---
 kind: normative
-applies_to: 0.2.3
+applies_to: 0.2.4
 tracks:
   - skills/async-shell/SKILL.md
   - skills/async-shell-maintainer/SKILL.md

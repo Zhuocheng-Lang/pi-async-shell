@@ -1,6 +1,6 @@
 ---
 kind: notes
-applies_to: 0.2.3
+applies_to: 0.2.4
 tracks:
   - src/core/registry.ts
   - src/core/records.ts

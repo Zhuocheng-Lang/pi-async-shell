@@ -1,6 +1,6 @@
 ---
 kind: normative
-applies_to: 0.2.3
+applies_to: 0.2.4
 tracks:
   - src/core/spawn.ts
   - src/core/pipe-supervisor.mjs
